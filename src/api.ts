@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import type { Adapter, ProviderNote, StatusNote, UsagePoint } from "./adapters/types";
 import type { AuditEventRow, Db, SessionRow } from "./db";
+import { windowsFromPoints, type OverviewWindow } from "./windows";
 
 export interface DegradedEndpoint {
   endpoint: string;
@@ -22,6 +23,8 @@ export interface OverviewProvider {
   notes: ProviderNote[];
   degradedEndpoints: DegradedEndpoint[];
   points: UsagePoint[];
+  /** Authoritative quota windows (5h, weekly, …) for an outside assistant. */
+  windows: OverviewWindow[];
 }
 
 export interface DiaryEntry {
@@ -97,6 +100,9 @@ export function buildApi(deps: {
         // Includes daily history rows (model-daily) — the UI renders those in a separate
         // per-model section rather than the main card rows.
         points: latest.filter((p) => p.provider === a.id),
+        windows: windowsFromPoints(latest.filter((p) => p.provider === a.id)).map(
+          ({ provider: _provider, ...window }) => window,
+        ),
       };
     });
     return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);

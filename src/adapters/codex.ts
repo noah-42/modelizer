@@ -1,8 +1,13 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { spawnAppServer } from "./codex-app-server";
+import { mergeRateLimits, parseAppServerRateLimits, parseSessionRateLimits } from "./codex-limits";
+import type { CodexRateLimitWindow, CodexRateLimits } from "./codex-limits";
 import { NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
+
+export type { CodexRateLimitWindow, CodexRateLimits };
 
 /**
  * OpenAI via Codex (ChatGPT subscription) — stability tier 3: local files, no API.
@@ -20,12 +25,14 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from 
  *         = input + output } }
  * Exactly one record per turn (verified: zero duplicates across all files); deduped anyway.
  *
- * Real quota telemetry: event_msg entries whose payload carries `rate_limits` (verified
- * 2026-10-13 against live files) — OpenAI's own view of the plan windows:
- *   rate_limits: { primary: { used_percent, window_minutes (300 = 5h), resets_at (epoch SECONDS) },
- *                  secondary: { ... window_minutes 10080 = week }, credits: { has_credits, balance },
- *                  plan_type: "plus" }
- * The latest snapshot across all scanned files wins. 5-hour window: same rolling block as
+ * Real quota telemetry, preferred source first:
+ *   1. `codex app-server` JSON-RPC `account/rateLimits/read` (documented; no model turn).
+ *   2. Session logs. `token_count` events (often wrapped in event_msg) carry
+ *      payload.rate_limits: { primary, secondary } each with used_percent, window_minutes
+ *      (300 = 5h, 10080 = weekly — classified by duration, not by slot), resets_at (unix
+ *      seconds). Older builds send resets_in_seconds relative to the event timestamp.
+ *      `codex exec` may write rate_limits: null; those lines are not snapshots.
+ * The latest log snapshot wins. 5-hour window: same rolling block as
  * Claude — anchored at the first turn record after a ≥5h gap; the next turn at/after anchor+5h
  * opens a new block. Model attribution follows turn_context entries in file order (model can
  * change mid-thread via settings). Aggregate-only: no prompts, paths, or session ids leave
@@ -35,19 +42,6 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from 
 const BLOCK_MS = 5 * 3_600_000;
 /** Scan window: the 5h block plus daily history for the UI's 7-day per-model section. */
 const SCAN_MS = 8 * 86_400_000;
-
-export interface CodexRateLimitWindow {
-  usedPercent: number;
-  windowMinutes: number;
-  resetsAt: string;
-}
-
-export interface CodexRateLimits {
-  observedAt: string;
-  planType: string | null;
-  primary: CodexRateLimitWindow | null;
-  secondary: CodexRateLimitWindow | null;
-}
 
 export interface CodexBlockSummary {
   start: string;
@@ -146,10 +140,16 @@ function collectTurns(
     for (const { ts, entry } of parsed) {
       const type = entry.type;
       const payload = entry.payload;
-      if (type === "event_msg" && payload !== null && typeof payload === "object") {
-        const rl = (payload as Record<string, unknown>).rate_limits;
+      if ((type === "event_msg" || type === "token_count") && payload !== null && typeof payload === "object") {
+        const body = payload as Record<string, unknown>;
+        // event_msg wraps a token_count; a bare token_count carries rate_limits on the payload.
+        if (type === "event_msg" && body.type !== undefined && body.type !== "token_count" && body.rate_limits === undefined) {
+          continue;
+        }
+        const rl = body.rate_limits;
+        // codex exec writes rate_limits: null. That is not a snapshot.
         if (rl !== null && typeof rl === "object") {
-          const parsedRl = parseRateLimits(rl as Record<string, unknown>, ts);
+          const parsedRl = parseSessionRateLimits(rl as Record<string, unknown>, ts);
           if (parsedRl !== null && (rateLimits === null || ts > Date.parse(rateLimits.observedAt))) {
             rateLimits = parsedRl;
           }
@@ -187,33 +187,6 @@ function collectTurns(
   }
   turns.sort((a, b) => a.ts - b.ts);
   return { turns, duplicates, unparsable, rateLimits };
-}
-
-// resets_at is epoch SECONDS in the wild (e.g. 1791910105).
-function parseRateLimits(rl: Record<string, unknown>, observedTs: number): CodexRateLimits | null {
-  const win = (v: unknown): CodexRateLimitWindow | null => {
-    if (v === null || typeof v !== "object") return null;
-    const w = v as Record<string, unknown>;
-    const used = w.used_percent;
-    const minutes = w.window_minutes;
-    const resets = w.resets_at;
-    if (typeof used !== "number" || typeof minutes !== "number") return null;
-    const resetsSec = typeof resets === "number" && Number.isFinite(resets) ? resets : null;
-    return {
-      usedPercent: used,
-      windowMinutes: minutes,
-      resetsAt: resetsSec !== null ? new Date(resetsSec * 1000).toISOString() : new Date(observedTs + minutes * 60_000).toISOString(),
-    };
-  };
-  const primary = win(rl.primary);
-  const secondary = win(rl.secondary);
-  if (primary === null && secondary === null) return null;
-  return {
-    observedAt: new Date(observedTs).toISOString(),
-    planType: typeof rl.plan_type === "string" ? rl.plan_type : null,
-    primary,
-    secondary,
-  };
 }
 
 /** 5h block semantics: a turn at/after the anchor+5h opens a new block anchored there. */
@@ -295,8 +268,8 @@ export const codexAdapter: Adapter = {
       text: "ChatGPT-plan usage has no API (the Admin API only covers platform-org billing). This card parses the per-turn usage records Codex writes under ~/.codex/sessions, so nothing is sent anywhere and no key is needed.",
     },
     {
-      title: "5-hour session blocks",
-      text: "Usage metering runs in rolling 5-hour blocks anchored at your first turn after a break. Plan limits are unpublished, so the card shows absolute tokens instead of a percentage. Weekly limits aren't derivable from transcripts.",
+      title: "5-hour and weekly windows",
+      text: "Live percentages and reset times come from `codex app-server` (account/rateLimits/read — no model turn). If that command is unavailable, the card falls back to rate_limits snapshots Codex writes into session logs. Windows are identified by length (300 minutes = 5h, 10080 = weekly), not by primary/secondary slot. Set CODEX_APP_SERVER=0 to skip the live read.",
     },
     {
       title: "Scope & counting",
@@ -315,14 +288,16 @@ export const codexAdapter: Adapter = {
 
     let files: string[] = [];
     if (existsSync(dir)) files = listSessionFiles(dir, now);
-    const { turns, duplicates, unparsable, rateLimits } = collectTurns(files, since);
+    const { turns, duplicates, unparsable, rateLimits: logLimits } = collectTurns(files, since);
+    const app = await readAppServer(ctx);
+    const rateLimits = mergeRateLimits(logLimits, app.limits);
     const tokens = Number(ctx.env.CODEX_SESSION_TOKENS ?? "");
     const tLimit = Number.isFinite(tokens) && tokens > 0 ? tokens : null;
     const turnsEnv = Number(ctx.env.CODEX_SESSION_TURNS ?? "");
     const turnLimit = Number.isFinite(turnsEnv) && turnsEnv > 0 ? turnsEnv : null;
     const summary = summarize(files, turns, duplicates, unparsable, tLimit, turnLimit, rateLimits);
     const body = JSON.stringify(summary);
-    return [
+    const polls: RawPoll[] = [
       {
         endpoint: "sessions-jsonl",
         url: `file://${dir}`,
@@ -332,6 +307,8 @@ export const codexAdapter: Adapter = {
         headers: {},
       },
     ];
+    if (app.poll) polls.push(app.poll);
+    return polls;
   },
 
   normalize(polls, capturedAt) {
@@ -349,18 +326,23 @@ export const codexAdapter: Adapter = {
     // the window rolled with no usage recorded in it — the new window is 0% used, and its
     // next reset isn't knowable until the next request.
     const rl = s.rateLimits;
-    const windowPoint = (label: string, w: CodexRateLimitWindow) => {
-      const rolled = Date.parse(w.resetsAt) <= Date.parse(capturedAt);
+    const windowPoint = (label: string, kind: "five_hour" | "weekly", w: CodexRateLimitWindow) => {
+      const rolled = w.resetsAt !== null && Date.parse(w.resetsAt) <= Date.parse(capturedAt);
+      const used = rolled ? 0 : w.usedPercent;
       points.push(blankPoint(capturedAt, label, "quota", "percent", {
-        used: rolled ? 0 : w.usedPercent,
+        used,
         limit: 100,
         remaining: rolled ? 100 : Math.max(0, 100 - w.usedPercent),
         reset_at: rolled ? null : w.resetsAt,
         window_end: rolled ? null : w.resetsAt,
+        quota_window: kind,
+        source: w.source,
+        stale: rolled,
+        used_percent: used,
       }));
     };
-    if (rl?.primary !== null && rl?.primary !== undefined) windowPoint("codex-5h-percent", rl.primary);
-    if (rl?.secondary !== null && rl?.secondary !== undefined) windowPoint("codex-weekly-percent", rl.secondary);
+    if (rl?.byWindow.five_hour) windowPoint("codex-5h-percent", "five_hour", rl.byWindow.five_hour);
+    if (rl?.byWindow.weekly) windowPoint("codex-weekly-percent", "weekly", rl.byWindow.weekly);
     const active = s.blocks.at(-1);
     if (active !== undefined) {
       points.push(blankPoint(capturedAt, "codex-5h", "usage", "tokens", {
@@ -399,6 +381,84 @@ export const codexAdapter: Adapter = {
     return points;
   },
 };
+
+/**
+ * Live read via `codex app-server`. A missing binary is a quiet fallback to session logs.
+ * Protocol and shape failures are archived (optional) so a drift is visible without
+ * failing the transcript poll.
+ */
+async function readAppServer(ctx: CollectContext): Promise<{ poll: RawPoll | null; limits: CodexRateLimits | null }> {
+  if (ctx.env.CODEX_APP_SERVER === "0") return { poll: null, limits: null };
+  const fixture = ctx.env.CODEX_APP_SERVER_FIXTURE?.trim();
+  if (fixture) {
+    try {
+      const body = readFileSync(fixture, "utf8");
+      const json = JSON.parse(body) as unknown;
+      const limits = parseAppServerRateLimits(json, ctx.now.toISOString());
+      return {
+        poll: {
+          endpoint: "app-server",
+          url: `file://${fixture}`,
+          status: limits ? 200 : 422,
+          body,
+          json,
+          headers: {},
+          optional: true,
+        },
+        limits,
+      };
+    } catch (err) {
+      const message = (err as Error).message;
+      return {
+        poll: {
+          endpoint: "app-server",
+          url: `file://${fixture}`,
+          status: 0,
+          body: message,
+          json: { error: message },
+          headers: {},
+          optional: true,
+        },
+        limits: null,
+      };
+    }
+  }
+
+  const bin = ctx.env.CODEX_BIN?.trim() || "codex";
+  const result = await spawnAppServer(bin, ["app-server"], 12_000);
+  if (!result.ok) {
+    if (result.missing) {
+      ctx.log("codex: app-server binary unavailable; using session logs");
+      return { poll: null, limits: null };
+    }
+    ctx.log(`codex: app-server failed (${result.error}); using session logs`);
+    return {
+      poll: {
+        endpoint: "app-server",
+        url: "codex app-server",
+        status: 0,
+        body: result.raw || result.error,
+        json: { error: result.error },
+        headers: {},
+        optional: true,
+      },
+      limits: null,
+    };
+  }
+  const limits = parseAppServerRateLimits(result.result, ctx.now.toISOString());
+  return {
+    poll: {
+      endpoint: "app-server",
+      url: "codex app-server",
+      status: limits ? 200 : 422,
+      body: result.raw || JSON.stringify(result.result),
+      json: result.result,
+      headers: {},
+      optional: true,
+    },
+    limits,
+  };
+}
 
 function blankPoint(
   capturedAt: string,

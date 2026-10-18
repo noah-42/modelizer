@@ -2,6 +2,7 @@ import { buildApi } from "./api";
 import { ADAPTERS } from "./adapters";
 import { loadConfig } from "./config";
 import { openDb } from "./db";
+import { createNotifier } from "./notify";
 import { Scheduler } from "./scheduler";
 import { resolveEnv } from "./secrets";
 
@@ -25,6 +26,7 @@ const sessionId = db.startSession(bootedAt, process.pid);
 const log = (msg: string) => console.log(`[${new Date().toISOString()}] ${msg}`);
 db.addAudit(sessionId, bootedAt, null, "info", "session started", `pid ${process.pid}, db ${dbPath}`);
 
+const notifier = createNotifier({ db, env, log });
 const scheduler = new Scheduler({
   adapters: enabled,
   db,
@@ -32,6 +34,7 @@ const scheduler = new Scheduler({
   maxBackoffMs: config.scheduler.maxBackoffSeconds * 1000,
   log,
   audit: (e) => db.addAudit(sessionId, e.at, e.provider, e.level, e.event, e.detail),
+  ...(notifier ? { notifier } : {}),
 });
 const stopTimer = scheduler.start(config.scheduler.tickSeconds * 1000);
 void scheduler.tick().catch((err) => console.error(`initial tick failed: ${(err as Error).message}`));

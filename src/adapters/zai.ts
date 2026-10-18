@@ -209,16 +209,43 @@ export const zaiAdapter: Adapter = {
         }
 
         let reset_at = toIsoReset(l.nextResetTime);
+        let stale = false;
         if (reset_at !== null && totalMinutes === 300) {
           const delta = Date.parse(reset_at) - Date.parse(capturedAt);
-          if (Number.isFinite(delta) && delta > 6 * 3600_000) reset_at = null; // bogus reset for a 5h window
+          if (Number.isFinite(delta) && delta > 6 * 3600_000) {
+            reset_at = null; // bogus reset for a 5h window
+            stale = true;
+          }
         }
+        const quotaWindow = label === "coding-5h" ? "five_hour" : label === "monthly" ? "monthly" : label === "mcp" ? "mcp" : null;
+        const usedPercent = percentage !== null
+          ? percentage
+          : used !== null && total !== null && total > 0
+            ? (used / total) * 100
+            : null;
 
         if (used !== null || remaining !== null || total !== null) {
-          push({ used, limit: total, remaining, reset_at }, label, "quota", pointUnit);
-        } else {
+          push({
+            used,
+            limit: total,
+            remaining,
+            reset_at,
+            quota_window: quotaWindow,
+            source: quotaWindow ? "zai-api" : null,
+            stale,
+            used_percent: usedPercent,
+          }, label, "quota", pointUnit);
+        } else if (percentage !== null) {
           // Percentage-only window (observed for the 5h token window on lite plans).
-          push({ used: percentage, limit: 100, reset_at }, label, "quota", "percent");
+          push({
+            used: percentage,
+            limit: 100,
+            reset_at,
+            quota_window: quotaWindow,
+            source: "zai-api",
+            stale,
+            used_percent: percentage,
+          }, label, "quota", "percent");
         }
 
         for (const d of asRecordArray(l.usageDetails)) {
@@ -244,7 +271,16 @@ export const zaiAdapter: Adapter = {
         const remaining = num(w.remaining ?? w.remain ?? w.left);
         const total = num(w.total ?? w.limit ?? w.quota);
         if (used === null && remaining === null && total === null) continue;
-        push({ used, limit: total, remaining }, label, "quota", "tokens");
+        const quotaWindow = label === "coding-5h" ? "five_hour" : label === "monthly" ? "monthly" : label === "token-window" ? "token_window" : null;
+        const usedPercent = used !== null && total !== null && total > 0 ? (used / total) * 100 : null;
+        push({
+          used,
+          limit: total,
+          remaining,
+          quota_window: quotaWindow,
+          source: quotaWindow ? "zai-api" : null,
+          used_percent: usedPercent,
+        }, label, "quota", "tokens");
       }
       if (points.length === 0) throw new NormalizeError("zai coding-usage: no recognizable windows");
     }

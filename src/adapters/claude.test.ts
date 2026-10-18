@@ -21,7 +21,12 @@ function fixtureDir(name: string): string {
 function ctx(dir: string): CollectContext {
   return {
     fetchFn: fetch,
-    env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_OAUTH_TOKEN: "" },
+    env: {
+      CLAUDE_PROJECTS_DIR: dir,
+      CLAUDE_OAUTH_TOKEN: "",
+      CLAUDE_USAGE: "0",
+      MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json"),
+    },
     now: NOW,
     log: () => {},
   };
@@ -139,7 +144,7 @@ describe("claude adapter (T3 local transcripts)", () => {
     ]);
     const polls = await claudeAdapter.collect({
       fetchFn: fetch,
-      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_SESSION_TURNS: "10", CLAUDE_OAUTH_TOKEN: "" },
+      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_SESSION_TURNS: "10", CLAUDE_OAUTH_TOKEN: "", CLAUDE_USAGE: "0", MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json") },
       now: NOW,
       log: () => {},
     });
@@ -178,7 +183,7 @@ describe("claude adapter (T3 local transcripts)", () => {
     ]);
     const polls = await claudeAdapter.collect({
       fetchFn: fetch,
-      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_SESSION_TOKENS: "10000", CLAUDE_OAUTH_TOKEN: "" },
+      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_SESSION_TOKENS: "10000", CLAUDE_OAUTH_TOKEN: "", CLAUDE_USAGE: "0", MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json") },
       now: NOW,
       log: () => {},
     });
@@ -230,41 +235,29 @@ describe("claude adapter (T3 local transcripts)", () => {
   });
 });
 
-describe("claude OAuth usage (live quota, tier 2)", () => {
-  const USAGE_BODY = {
-    five_hour: { utilization: 62.5, resets_at: "2026-10-06T23:00:00.000Z" },
-    seven_day: null,
-    limits: [
-      { kind: "session", percent: 10, resets_at: "bogus" }, // flat bucket wins
-      { kind: "weekly_all", percent: 31, resets_at: "2026-10-12T00:00:00.000Z" },
-      { kind: "weekly_scoped", percent: 0, resets_at: null, scope: { model: { display_name: "Opus" } } },
-      { kind: "session", percent: 0, resets_at: null }, // placeholder — skipped
-    ],
-  };
-
-  function ctxWithFetch(dir: string, stub: (url: string, init?: RequestInit) => Promise<Response>): CollectContext {
-    return {
-      fetchFn: ((url: string | URL | Request, init?: RequestInit) =>
-        stub(String(url), init)) as unknown as typeof fetch,
-      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_OAUTH_TOKEN: "test-token" },
+describe("claude usage command + hook (live reset times)", () => {
+  test("prose /usage file → session and weekly percent points, transcripts kept", async () => {
+    const dir = fixtureDir("usage");
+    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "o1", input: 10, output: 5 })]);
+    const usageFile = join(root, "usage.txt");
+    writeFileSync(usageFile, [
+      "Session: 62.5% used · resets 2026-10-06T23:00:00.000Z",
+      "Weekly: 31% used · resets 2026-10-12T00:00:00.000Z",
+    ].join("\n"));
+    const polls = await claudeAdapter.collect({
+      fetchFn: fetch,
+      env: {
+        CLAUDE_PROJECTS_DIR: dir,
+        CLAUDE_USAGE_FILE: usageFile,
+        MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json"),
+      },
       now: NOW,
       log: () => {},
-    };
-  }
-
-  test("fresh token → usage poll merged as real percent points", async () => {
-    const dir = fixtureDir("oauth");
-    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "o1", input: 10, output: 5 })]);
-    let sawHeaders: Headers | undefined;
-    const polls = await claudeAdapter.collect(
-      ctxWithFetch(dir, async (_url: string, init?: RequestInit) => {
-        sawHeaders = new Headers(init?.headers);
-        return new Response(JSON.stringify(USAGE_BODY), { status: 200 });
-      }),
-    );
-    expect(polls.map((p) => p.endpoint).sort()).toEqual(["oauth-usage", "projects-jsonl"]);
-    expect(sawHeaders?.get("anthropic-beta")).toBe("oauth-2025-04-20");
-    expect(sawHeaders?.get("authorization")).toBe("Bearer test-token");
+    });
+    expect(polls.map((p) => p.endpoint).sort()).toEqual(["projects-jsonl", "usage-command"]);
+    const raw = polls.find((p) => p.endpoint === "usage-command");
+    expect(raw?.body).toContain("62.5%");
+    expect(raw?.status).toBe(200);
 
     const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
     expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({
@@ -274,38 +267,82 @@ describe("claude OAuth usage (live quota, tier 2)", () => {
       limit: 100,
       remaining: 37.5,
       reset_at: "2026-10-06T23:00:00.000Z",
+      quota_window: "five_hour",
+      source: "usage-command",
+      stale: false,
     });
     expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({
       used: 31,
       remaining: 69,
       reset_at: "2026-10-12T00:00:00.000Z",
+      quota_window: "weekly",
+      source: "usage-command",
     });
-    // transcript estimate still present alongside the real numbers
     expect(points.find((p) => p.label === "claude-5h")).toBeDefined();
   });
 
-  test("401 → optional failure, estimates remain, no crash", async () => {
-    const dir = fixtureDir("oauth401");
+  test("unparsed usage output is archived and both windows are stale", async () => {
+    const dir = fixtureDir("usage-bad");
     writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "z1", input: 10, output: 5 })]);
-    const polls = await claudeAdapter.collect(
-      ctxWithFetch(dir, async () => new Response('{"error":{"type":"authentication_error"}}', { status: 401 })),
-    );
-    expect(polls.some((p) => p.endpoint === "oauth-usage" && p.status === 401)).toBe(true);
-    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
-    expect(points.find((p) => p.label === "claude-5h-percent")).toBeUndefined();
-    expect(points.find((p) => p.label === "claude-5h")).toBeDefined();
-  });
-
-  test("no token (empty env override) → no usage poll attempted", async () => {
-    const dir = fixtureDir("oauthexp");
-    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "e1", input: 1, output: 1 })]);
+    const usageFile = join(root, "usage-bad.txt");
+    writeFileSync(usageFile, "hello, this is not a usage report\n");
     const polls = await claudeAdapter.collect({
       fetchFn: fetch,
-      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_OAUTH_TOKEN: "" },
+      env: {
+        CLAUDE_PROJECTS_DIR: dir,
+        CLAUDE_USAGE_FILE: usageFile,
+        MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json"),
+      },
       now: NOW,
       log: () => {},
     });
+    const raw = polls.find((p) => p.endpoint === "usage-command");
+    expect(raw?.body).toContain("not a usage report");
+    expect((raw?.json as { stale?: boolean }).stale).toBe(true);
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({ stale: true, used: null, quota_window: "five_hour" });
+    expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({ stale: true, quota_window: "weekly" });
+    expect(points.find((p) => p.label === "claude-5h")).toBeDefined();
+  });
+
+  test("CLAUDE_USAGE=0 skips the command", async () => {
+    const dir = fixtureDir("usage-off");
+    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "e1", input: 1, output: 1 })]);
+    const polls = await claudeAdapter.collect(ctx(dir));
     expect(polls.map((p) => p.endpoint)).toEqual(["projects-jsonl"]);
+  });
+
+  test("hook file supplies the exact reset and overrides the command", async () => {
+    const dir = fixtureDir("hook");
+    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "h1", input: 1, output: 1 })]);
+    const usageFile = join(root, "usage-hook.txt");
+    writeFileSync(usageFile, "Session: 90% used · resets 2026-10-06T21:00:00.000Z\nWeekly: 10% used · resets 2026-10-12T00:00:00.000Z\n");
+    const hookFile = join(root, "hook.json");
+    writeFileSync(hookFile, JSON.stringify({
+      recordedAt: "2026-10-06T19:50:00.000Z",
+      error: "rate_limit",
+      message: "session limit resets 2026-10-06T22:15:00.000Z",
+      resetsAt: "2026-10-06T22:15:00.000Z",
+      window: "five_hour",
+    }));
+    const polls = await claudeAdapter.collect({
+      fetchFn: fetch,
+      env: { CLAUDE_PROJECTS_DIR: dir, CLAUDE_USAGE_FILE: usageFile, MODELIZER_CLAUDE_HOOK_FILE: hookFile },
+      now: NOW,
+      log: () => {},
+    });
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({
+      used: 90,
+      reset_at: "2026-10-06T22:15:00.000Z",
+      source: "hook",
+      stale: false,
+    });
+    expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({
+      used: 10,
+      source: "usage-command",
+      reset_at: "2026-10-12T00:00:00.000Z",
+    });
   });
 
   test("elapsed transcript window rolls forward to a fresh 0", async () => {

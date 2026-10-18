@@ -40,6 +40,38 @@ for (let d = 3; d <= 7; d++) {
   lines.push(...turn(20 + d, hoursAgo(24 * d - 0.5), "gpt-5.5", 400, 6_000, 200));
 }
 
+const reset5h = Math.floor((now + 3 * 3_600_000) / 1000);
+const resetWeek = Math.floor((now + 4 * 86_400_000) / 1000);
+lines.push(JSON.stringify({
+  timestamp: hoursAgo(0.4),
+  ordinal: 100,
+  type: "event_msg",
+  payload: { type: "token_count", rate_limits: null },
+}));
+lines.push(JSON.stringify({
+  timestamp: hoursAgo(0.3),
+  ordinal: 101,
+  type: "event_msg",
+  payload: {
+    type: "token_count",
+    rate_limits: {
+      limit_id: "codex",
+      primary: { used_percent: 37, window_minutes: 300, resets_at: reset5h },
+      secondary: { used_percent: 12, window_minutes: 10080, resets_at: resetWeek },
+      plan_type: "plus",
+    },
+  },
+}));
+
 writeFileSync(join(dir, "rollout-mock.jsonl"), lines.join("\n"));
+const fixtureDir = "data/mock-codex";
+writeFileSync(join(fixtureDir, "app-server.json"), JSON.stringify({
+  rateLimits: {
+    limitId: "codex",
+    primary: { usedPercent: 37, windowDurationMins: 300, resetsAt: reset5h },
+    secondary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: resetWeek },
+  },
+  rateLimitResetCredits: { availableCount: 0, credits: [] },
+}, null, 2));
 console.log(`mock codex sessions: ${n} turns → ${dir}`);
-console.log("run with: CODEX_SESSIONS_DIR=data/mock-codex/sessions MODELIZER_DB=data/dev-mock.db bun run dev");
+console.log("run with: CODEX_SESSIONS_DIR=data/mock-codex/sessions CODEX_APP_SERVER_FIXTURE=data/mock-codex/app-server.json MODELIZER_DB=data/dev-mock.db bun run dev");

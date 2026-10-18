@@ -309,10 +309,20 @@ describe("end to end", () => {
     // degradedEndpoints surfaces the latest batch's soft-fails (balance 404) for the UI
     const app2 = buildApi({ db, adapters: [zaiAdapter], env, now: () => new Date("2026-10-03T00:02:00Z") });
     const ov = (await (await app2.request("/api/overview")).json()) as {
-      providers: Array<{ id: string; degradedEndpoints: Array<{ endpoint: string; status: number }> }>;
+      providers: Array<{
+        id: string;
+        degradedEndpoints: Array<{ endpoint: string; status: number }>;
+        windows: Array<{ window: string; usedPercent: number | null; resetsAt: string | null; source: string; stale: boolean }>;
+      }>;
     };
     const zaiOv = ov.providers.find((pr) => pr.id === "zai");
     expect(zaiOv?.degradedEndpoints).toEqual([{ endpoint: "balance", status: 404 }]);
+    expect(zaiOv?.windows.find((w) => w.window === "five_hour")).toMatchObject({
+      usedPercent: 5,
+      source: "zai-api",
+      stale: false,
+      resetsAt: new Date(1791047424085).toISOString(),
+    });
     db.close();
   });
 });

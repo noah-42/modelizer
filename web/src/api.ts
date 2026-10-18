@@ -52,6 +52,13 @@ export interface OverviewProvider {
   notes: ProviderNote[];
   degradedEndpoints: DegradedEndpoint[];
   points: UsagePoint[];
+  windows: Array<{
+    window: string;
+    usedPercent: number | null;
+    resetsAt: string | null;
+    source: string;
+    stale: boolean;
+  }>;
 }
 
 export interface Overview {

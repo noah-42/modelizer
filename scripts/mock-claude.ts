@@ -48,5 +48,17 @@ for (let d = 3; d <= 7; d++) {
 }
 
 writeFileSync(join(OUT, "session-mock.jsonl"), lines.join("\n"));
+const reset5h = new Date(now + 3 * 3_600_000).toISOString();
+const resetWeek = new Date(now + 4 * 86_400_000).toISOString();
+writeFileSync("data/mock-claude/usage.txt", [
+  "Current session",
+  "41% used",
+  `Resets ${reset5h}`,
+  "",
+  "Current week (all models)",
+  "9% used",
+  `Resets ${resetWeek}`,
+  "",
+].join("\n"));
 console.log(`mock claude transcripts: ${n} turns → ${OUT}`);
-console.log("run with: CLAUDE_PROJECTS_DIR=data/mock-claude/projects MODELIZER_DB=data/dev-mock.db bun run dev");
+console.log("run with: CLAUDE_PROJECTS_DIR=data/mock-claude/projects CLAUDE_USAGE_FILE=data/mock-claude/usage.txt MODELIZER_DB=data/dev-mock.db bun run dev");

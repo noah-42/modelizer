@@ -19,7 +19,7 @@ function fixtureDir(name: string): string {
 }
 
 function ctx(dir: string): CollectContext {
-  return { fetchFn: fetch, env: { CODEX_SESSIONS_DIR: dir }, now: NOW, log: () => {} };
+  return { fetchFn: fetch, env: { CODEX_SESSIONS_DIR: dir, CODEX_APP_SERVER: "0" }, now: NOW, log: () => {} };
 }
 
 interface Turn {
@@ -172,7 +172,7 @@ describe("codex adapter (T3 local transcripts)", () => {
     ]);
     const polls = await codexAdapter.collect({
       fetchFn: fetch,
-      env: { CODEX_SESSIONS_DIR: dir, CODEX_SESSION_TOKENS: "10000", CODEX_SESSION_TURNS: "3" },
+      env: { CODEX_SESSIONS_DIR: dir, CODEX_SESSION_TOKENS: "10000", CODEX_SESSION_TURNS: "3", CODEX_APP_SERVER: "0" },
       now: NOW,
       log: () => {},
     });
@@ -260,6 +260,144 @@ describe("codex adapter (T3 local transcripts)", () => {
     // weekly reset still in the future → real numbers kept
     const weekly = points.find((p) => p.label === "codex-weekly-percent");
     expect(weekly).toMatchObject({ used: 5, remaining: 95 });
+  });
+
+  test("windows follow window_minutes, not the primary/secondary slot", async () => {
+    const dir = fixtureDir("swap");
+    writeSession(dir, "rollout-swap.jsonl", [
+      ...turn({ ordinal: 1, ts: "2026-10-12T15:00:00.000Z", input: 10, output: 1, turnId: "s1" }),
+      JSON.stringify({
+        timestamp: "2026-10-12T15:10:00.000Z",
+        ordinal: 2,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            // swapped on purpose: primary is the week, secondary is the 5h window
+            primary: { used_percent: 9, window_minutes: 10080, resets_at: 1792000000 },
+            secondary: { used_percent: 44, window_minutes: 300, resets_at: 1791910105 },
+          },
+        },
+      }),
+    ]);
+    const polls = await codexAdapter.collect(ctx(dir));
+    const points = codexAdapter.normalize(polls, "2026-10-12T16:00:01.000Z");
+    expect(points.find((p) => p.label === "codex-5h-percent")).toMatchObject({
+      used: 44,
+      quota_window: "five_hour",
+      source: "session-log",
+      reset_at: new Date(1791910105 * 1000).toISOString(),
+    });
+    expect(points.find((p) => p.label === "codex-weekly-percent")).toMatchObject({
+      used: 9,
+      quota_window: "weekly",
+      reset_at: new Date(1792000000 * 1000).toISOString(),
+    });
+  });
+
+  test("older logs: resets_in_seconds is relative to the event timestamp; null rate_limits are skipped", async () => {
+    const dir = fixtureDir("rel");
+    const eventTs = "2026-10-12T15:00:00.000Z";
+    writeSession(dir, "rollout-rel.jsonl", [
+      ...turn({ ordinal: 1, ts: eventTs, input: 10, output: 1, turnId: "rel1" }),
+      JSON.stringify({
+        timestamp: eventTs,
+        ordinal: 2,
+        type: "token_count",
+        payload: { rate_limits: null },
+      }),
+      JSON.stringify({
+        timestamp: eventTs,
+        ordinal: 3,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            primary: { used_percent: 15, window_minutes: 300, resets_in_seconds: 7200 },
+            secondary: { used_percent: 2, window_minutes: 10080, resets_in_seconds: 86_400 },
+          },
+        },
+      }),
+    ]);
+    const polls = await codexAdapter.collect(ctx(dir));
+    const points = codexAdapter.normalize(polls, "2026-10-12T16:00:01.000Z");
+    const anchor = Date.parse(eventTs);
+    expect(points.find((p) => p.label === "codex-5h-percent")).toMatchObject({
+      used: 15,
+      reset_at: new Date(anchor + 7_200_000).toISOString(),
+    });
+    expect(points.find((p) => p.label === "codex-weekly-percent")?.reset_at).toBe(new Date(anchor + 86_400_000).toISOString());
+  });
+
+  test("app-server fixture wins over session logs; logs fill a missing window", async () => {
+    const dir = fixtureDir("app");
+    writeSession(dir, "rollout-app.jsonl", [
+      ...turn({ ordinal: 1, ts: "2026-10-12T15:00:00.000Z", input: 10, output: 1, turnId: "a1" }),
+      JSON.stringify({
+        timestamp: "2026-10-12T15:05:00.000Z",
+        ordinal: 2,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            primary: { used_percent: 90, window_minutes: 300, resets_at: 1791910105 },
+            secondary: { used_percent: 8, window_minutes: 10080, resets_at: 1792000000 },
+          },
+        },
+      }),
+    ]);
+    const fixture = join(root, "app-server.json");
+    writeFileSync(fixture, JSON.stringify({
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1791911111 },
+        secondary: null,
+      },
+      rateLimitResetCredits: { availableCount: 1, credits: [] },
+    }));
+    const polls = await codexAdapter.collect({
+      fetchFn: fetch,
+      env: { CODEX_SESSIONS_DIR: dir, CODEX_APP_SERVER_FIXTURE: fixture },
+      now: NOW,
+      log: () => {},
+    });
+    expect(polls.map((p) => p.endpoint).sort()).toEqual(["app-server", "sessions-jsonl"]);
+    expect(polls.find((p) => p.endpoint === "app-server")?.body).toContain("rateLimitResetCredits");
+    const points = codexAdapter.normalize(polls, "2026-10-12T16:00:01.000Z");
+    expect(points.find((p) => p.label === "codex-5h-percent")).toMatchObject({
+      used: 12,
+      source: "app-server",
+      reset_at: new Date(1791911111 * 1000).toISOString(),
+    });
+    // weekly was not in the RPC result — the log snapshot fills it
+    expect(points.find((p) => p.label === "codex-weekly-percent")).toMatchObject({ used: 8, source: "session-log" });
+  });
+
+  test("missing app-server binary falls back to logs without an extra poll", async () => {
+    const dir = fixtureDir("nobin");
+    writeSession(dir, "rollout-nobin.jsonl", [
+      ...turn({ ordinal: 1, ts: "2026-10-12T15:00:00.000Z", input: 10, output: 1, turnId: "n1" }),
+      JSON.stringify({
+        timestamp: "2026-10-12T15:05:00.000Z",
+        ordinal: 2,
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            primary: { used_percent: 21, window_minutes: 300, resets_at: 1791910105 },
+          },
+        },
+      }),
+    ]);
+    const polls = await codexAdapter.collect({
+      fetchFn: fetch,
+      env: { CODEX_SESSIONS_DIR: dir, CODEX_BIN: "modelizer-codex-missing" },
+      now: NOW,
+      log: () => {},
+    });
+    expect(polls.map((p) => p.endpoint)).toEqual(["sessions-jsonl"]);
+    const points = codexAdapter.normalize(polls, "2026-10-12T16:00:01.000Z");
+    expect(points.find((p) => p.label === "codex-5h-percent")).toMatchObject({ used: 21, source: "session-log" });
   });
 
   test("isConfigured / missingCredentials follow the directory", () => {

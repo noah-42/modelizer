@@ -32,6 +32,8 @@ export interface SchedulerDeps {
   log?: (msg: string) => void;
   /** Optional audit sink; every poll outcome and skip is recorded. */
   audit?: AuditSink;
+  /** Optional reset notifier. Scanned on each tick and via notifyDue() (CLI). */
+  notifier?: { scan(at: Date): Promise<void> };
 }
 
 class HttpPollError extends Error {
@@ -59,6 +61,7 @@ export class Scheduler {
   private readonly random: () => number;
   private readonly log: (msg: string) => void;
   private readonly audit: AuditSink | undefined;
+  private readonly notifier: { scan(at: Date): Promise<void> } | undefined;
   private nextDue = new Map<string, number>();
 
   constructor(deps: SchedulerDeps) {
@@ -71,6 +74,7 @@ export class Scheduler {
     this.random = deps.random ?? Math.random;
     this.log = deps.log ?? (() => {});
     this.audit = deps.audit;
+    this.notifier = deps.notifier;
   }
 
   private emitAudit(atIso: string, provider: string | null, level: AuditLevel, event: string, detail?: string) {
@@ -170,7 +174,18 @@ export class Scheduler {
         this.log(`tick: ${id}: ${(err as Error).message}`);
       }
     }
+    await this.notifyDue();
     return outcomes;
+  }
+
+  /** Let the reset notifier compare the latest windows. No-op when unset. */
+  async notifyDue(): Promise<void> {
+    if (!this.notifier) return;
+    try {
+      await this.notifier.scan(new Date(this.nowMs()));
+    } catch (err) {
+      this.log(`notifier: ${(err as Error).message}`);
+    }
   }
 
   start(tickIntervalMs: number): () => void {

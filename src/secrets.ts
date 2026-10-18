@@ -13,6 +13,7 @@ export const SECRET_NAMES = [
   "MOONSHOT_API_KEY",
   "OPENAI_ADMIN_API_KEY",
   "ANTHROPIC_ADMIN_API_KEY",
+  "MODELIZER_WEBHOOK_SECRET",
 ] as const;
 
 const KEYCHAIN_SERVICE = "modelizer";
