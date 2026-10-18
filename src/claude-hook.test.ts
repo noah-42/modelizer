@@ -3,13 +3,15 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const repoRoot = join(import.meta.dir, "..");
+
 describe("claude rate-limit hook script", () => {
   test("records a rate_limit reset and ignores other errors", async () => {
     const dir = mkdtempSync(join(tmpdir(), "modelizer-hook-"));
     const file = join(dir, "claude-rate-limit.json");
 
     const limited = Bun.spawn(["bun", "scripts/claude-rate-limit-hook.ts"], {
-      cwd: "/workspace",
+      cwd: repoRoot,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -27,7 +29,7 @@ describe("claude rate-limit hook script", () => {
     expect(saved.resetsAt).toBe("2026-10-18T18:30:00.000Z");
 
     const other = Bun.spawn(["bun", "scripts/claude-rate-limit-hook.ts"], {
-      cwd: "/workspace",
+      cwd: repoRoot,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
