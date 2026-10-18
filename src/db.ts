@@ -77,7 +77,11 @@ CREATE TABLE IF NOT EXISTS usage_points (
   tokens_in REAL,
   tokens_out REAL,
   cost_usd REAL,
-  captured_at TEXT NOT NULL
+  captured_at TEXT NOT NULL,
+  quota_window TEXT,
+  source TEXT,
+  stale INTEGER NOT NULL DEFAULT 0,
+  used_percent REAL
 );
 CREATE INDEX IF NOT EXISTS idx_points_group ON usage_points(provider, kind, label, captured_at);
 CREATE INDEX IF NOT EXISTS idx_points_day ON usage_points(provider, day);
@@ -121,15 +125,38 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_events(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_events(at);
+
+CREATE TABLE IF NOT EXISTS window_snapshots (
+  provider TEXT NOT NULL,
+  quota_window TEXT NOT NULL,
+  used_percent REAL,
+  resets_at TEXT,
+  source TEXT,
+  observed_at TEXT NOT NULL,
+  PRIMARY KEY (provider, quota_window)
+);
+
+CREATE TABLE IF NOT EXISTS reset_notices (
+  dedupe_key TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  quota_window TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  detected_at TEXT NOT NULL,
+  delivered_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT
+);
 `;
 
 const INSERT_POINT = `
 INSERT INTO usage_points
   (provider, kind, label, model, used, limit_value, remaining, unit,
-   window_start, window_end, reset_at, day, requests, tokens_in, tokens_out, cost_usd, captured_at)
+   window_start, window_end, reset_at, day, requests, tokens_in, tokens_out, cost_usd, captured_at,
+   quota_window, source, stale, used_percent)
 VALUES
   ($provider, $kind, $label, $model, $used, $limit, $remaining, $unit,
-   $window_start, $window_end, $reset_at, $day, $requests, $tokens_in, $tokens_out, $cost_usd, $captured_at)
+   $window_start, $window_end, $reset_at, $day, $requests, $tokens_in, $tokens_out, $cost_usd, $captured_at,
+   $quota_window, $source, $stale, $used_percent)
 `;
 
 const UPSERT_STATE = `
@@ -174,6 +201,10 @@ interface PointRow {
   tokens_out: number | null;
   cost_usd: number | null;
   captured_at: string;
+  quota_window: string | null;
+  source: string | null;
+  stale: number;
+  used_percent: number | null;
 }
 
 function rowToPoint(r: PointRow): UsagePoint {
@@ -195,6 +226,10 @@ function rowToPoint(r: PointRow): UsagePoint {
     tokens_out: r.tokens_out,
     cost_usd: r.cost_usd,
     captured_at: r.captured_at,
+    quota_window: r.quota_window,
+    source: r.source,
+    stale: r.stale === 1,
+    used_percent: r.used_percent,
   };
 }
 
@@ -218,13 +253,28 @@ function pointBindings(p: UsagePoint) {
     $tokens_out: p.tokens_out,
     $cost_usd: p.cost_usd,
     $captured_at: p.captured_at,
+    $quota_window: p.quota_window ?? null,
+    $source: p.source ?? null,
+    $stale: p.stale ? 1 : 0,
+    $used_percent: p.used_percent ?? null,
   };
+}
+
+function migrate(db: Database): void {
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(usage_points)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  if (!cols.has("quota_window")) db.exec("ALTER TABLE usage_points ADD COLUMN quota_window TEXT");
+  if (!cols.has("source")) db.exec("ALTER TABLE usage_points ADD COLUMN source TEXT");
+  if (!cols.has("stale")) db.exec("ALTER TABLE usage_points ADD COLUMN stale INTEGER NOT NULL DEFAULT 0");
+  if (!cols.has("used_percent")) db.exec("ALTER TABLE usage_points ADD COLUMN used_percent REAL");
 }
 
 export function openDb(path: string): Db {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  migrate(db);
 
   const insertPoint = db.prepare(INSERT_POINT);
   const insertRaw = db.prepare(

@@ -278,4 +278,21 @@ describe("scheduler", () => {
     expect(calls).toBe(2);
     h.db.close();
   });
+
+  test("tick asks the notifier to scan once", async () => {
+    let scans = 0;
+    const db = openDb(join(mkdtempSync(join(tmpdir(), "modelizer-sched-")), "s.db"));
+    const scheduler = new Scheduler({
+      adapters: [fakeAdapter()],
+      db,
+      env: {},
+      clock: () => new Date("2026-10-03T00:00:00Z"),
+      random: () => 0.5,
+      notifier: { async scan() { scans += 1; } },
+    });
+    await scheduler.tick();
+    await scheduler.notifyDue();
+    expect(scans).toBe(2);
+    db.close();
+  });
 });

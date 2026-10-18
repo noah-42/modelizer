@@ -20,6 +20,14 @@ export interface UsagePoint {
   tokens_out: number | null;
   cost_usd: number | null;
   captured_at: string;
+  /**
+   * Set on authoritative quota windows (5h / weekly / …). Transcript estimates leave this empty.
+   * `used_percent` is the provider's own percentage when it reports one.
+   */
+  quota_window?: string | null;
+  source?: string | null;
+  stale?: boolean;
+  used_percent?: number | null;
 }
 
 /** A single HTTP response archived verbatim so a broken adapter can be repaired from evidence. */

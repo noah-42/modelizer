@@ -22,13 +22,13 @@ enabled = true
 # [providers.copilot]
 # enabled = true
 
-# Claude Pro/Max — no key needed: reads Claude Code's local session logs (~/.claude/projects).
-# Optional "how much left" estimate: set CLAUDE_SESSION_TURNS in .env (see .env.example).
+# Claude Pro/Max — transcripts under ~/.claude/projects, plus `claude -p "/usage"` for
+# reset times. Optional StopFailure hook: scripts/claude-rate-limit-hook.ts.
 [providers.claude]
 enabled = true
 
-# OpenAI via Codex (ChatGPT plan) — no key needed: reads Codex's local session logs
-# (~/.codex/sessions). Optional "how much left" budgets: CODEX_SESSION_* in .env.
+# OpenAI via Codex (ChatGPT plan) — `codex app-server` rate limits, session logs as fallback.
+# Optional token budgets: CODEX_SESSION_* in .env. CODEX_APP_SERVER=0 skips the live read.
 [providers.codex]
 enabled = true
 

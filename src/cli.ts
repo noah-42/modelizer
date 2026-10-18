@@ -1,6 +1,7 @@
 import { ADAPTERS_BY_ID } from "./adapters";
 import { loadConfig } from "./config";
 import { openDb } from "./db";
+import { createNotifier } from "./notify";
 import { Scheduler } from "./scheduler";
 import { resolveEnv } from "./secrets";
 
@@ -27,12 +28,15 @@ if (targets.length === 0) {
 }
 
 const sessionId = db.startSession(new Date().toISOString(), process.pid);
+const log = (m: string) => console.error(m);
+const notifier = createNotifier({ db, env, log });
 const scheduler = new Scheduler({
   adapters: targets,
   db,
   env,
-  log: (m) => console.error(m),
+  log,
   audit: (e) => db.addAudit(sessionId, e.at, e.provider, e.level, e.event, e.detail),
+  ...(notifier ? { notifier } : {}),
 });
 for (const adapter of targets) {
   const outcome = await scheduler.runProvider(adapter.id);
@@ -57,6 +61,7 @@ for (const adapter of targets) {
     console.log(`  ${fields.join(" · ")}`);
   }
 }
+await scheduler.notifyDue();
 db.endSession(sessionId, new Date().toISOString());
 db.close();
 

@@ -47,6 +47,31 @@ describe("db", () => {
     db.close();
   });
 
+  test("quota window fields round-trip", () => {
+    const db = testDb();
+    db.insertPoints([
+      mkPoint({
+        kind: "quota",
+        label: "codex-5h-percent",
+        unit: "percent",
+        used: 12,
+        limit: 100,
+        quota_window: "five_hour",
+        source: "app-server",
+        stale: true,
+        used_percent: 12,
+        reset_at: "2026-10-03T05:00:00.000Z",
+      }),
+    ]);
+    const row = db.latestPoints()[0];
+    expect(row?.quota_window).toBe("five_hour");
+    expect(row?.source).toBe("app-server");
+    expect(row?.stale).toBe(true);
+    expect(row?.used_percent).toBe(12);
+    expect(row?.reset_at).toBe("2026-10-03T05:00:00.000Z");
+    db.close();
+  });
+
   test("same label different model/day are separate groups", () => {
     const db = testDb();
     db.insertPoints([

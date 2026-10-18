@@ -83,11 +83,16 @@ describe("zai normalize", () => {
     expect(five?.remaining).toBe(90000);
     expect(five?.unit).toBe("tokens");
     expect(five?.reset_at).toBe("2026-10-03T06:00:00.000Z"); // ISO inputs get canonicalized
+    expect(five?.used_percent).toBe(25); // official percentage kept alongside absolute tokens
+    expect(five?.quota_window).toBe("five_hour");
+    expect(five?.source).toBe("zai-api");
 
     const monthly = points.find((p) => p.label === "monthly");
     expect(monthly?.used).toBe(3600000);
     expect(monthly?.limit).toBe(4800000);
     expect(monthly?.reset_at).toBe(new Date(1793542651984).toISOString());
+    expect(monthly?.used_percent).toBe(75);
+    expect(monthly?.quota_window).toBe("monthly");
 
     const mcp = points.find((p) => p.label === "mcp");
     expect(mcp?.unit).toBe("requests");
@@ -106,6 +111,9 @@ describe("zai normalize", () => {
     expect(five?.used).toBe(5);
     expect(five?.limit).toBe(100);
     expect(five?.unit).toBe("percent");
+    expect(five?.used_percent).toBe(5);
+    expect(five?.quota_window).toBe("five_hour");
+    expect(five?.source).toBe("zai-api");
 
     const mcp = points.find((p) => p.label === "mcp");
     expect(mcp?.used).toBe(100);
@@ -129,6 +137,7 @@ describe("zai normalize", () => {
     (bogus.data.limits[0] as { nextResetTime?: string }).nextResetTime = "2026-10-03T11:00:00Z";
     const points = zaiAdapter.normalize([poll("quota-limit", bogus)], AT);
     expect(points.find((p) => p.label === "coding-5h")?.reset_at).toBeNull();
+    expect(points.find((p) => p.label === "coding-5h")?.stale).toBe(true);
   });
 
   test("coding/usage fallback when quota/limit fails; alias keys honored", () => {

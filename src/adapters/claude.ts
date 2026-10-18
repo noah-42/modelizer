@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { fetchPoll, NormalizeError } from "./types";
+import { runCommand } from "../proc";
+import { parseUsageText, type HookRecord, type ParsedUsageWindow } from "../usage-text";
+import { NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsagePoint } from "./types";
 
 /**
@@ -23,7 +25,11 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsageP
  * block. Verified 2026-10-06 against Claude Code's /usage: the block anchored at 21:52 (first
  * response) while Anthropic's window reset matched 21:40 (the prompt) — so blocks snap to the
  * latest user-entry timestamp preceding their first assistant turn.
- * Weekly limits exist too but are not derivable from transcripts; only the block is reported.
+ * Weekly limits and real reset times are not in the transcripts. Those come from
+ * `claude -p "/usage"` (local CLI, zero-token slash command; prose is parsed
+ * defensively and archived) and, when installed, a StopFailure hook that records
+ * the rate-limit message's reset time. The undocumented OAuth usage endpoint is
+ * not called — it would copy a Claude.ai login token.
  * Everything is aggregate-only: no message text, session ids, or project paths leave collect().
  */
 
@@ -32,18 +38,10 @@ const BLOCK_MS = 5 * 3_600_000;
 const SCAN_MS = 8 * 86_400_000;
 
 /**
- * Real quota telemetry (stability tier 2, verified schema from ccstatusline's usage-fetch,
- * 2026-10-13): Claude Code stores an OAuth token (macOS keychain service
- * "Claude Code-credentials", JSON blob { claudeAiOauth: { accessToken, expiresAt, ... } }),
- * which reads live windows from GET api.anthropic.com/api/oauth/usage
- * (header anthropic-beta: oauth-2025-04-20). Response — flat buckets win, limits[] fallback:
- *   { five_hour: { utilization, resets_at } | null, seven_day: { ... } | null,
- *     limits: [ { kind: "session"|"weekly_all"|"weekly_scoped", percent, resets_at } ] }
- * A limits entry with percent 0 and no resets_at is a placeholder, not data.
- * The token travels only in the Authorization header and is never logged or stored.
+ * OAuth credential helpers are retained for diagnostics only. collect() does not call
+ * api.anthropic.com/api/oauth/usage — that endpoint is undocumented and needs a copied
+ * login token. Live windows come from `claude -p "/usage"` and the optional hook file.
  */
-
-const OAUTH_USAGE_PATH = "/api/oauth/usage";
 
 export interface OAuthCredentials {
   token: string | null;
@@ -362,22 +360,14 @@ export const claudeAdapter: Adapter = {
     return this.isConfigured(env) ? [] : ["~/.claude/projects (run Claude Code once, or set CLAUDE_PROJECTS_DIR)"];
   },
 
-  statusHints(env): StatusNote[] {
-    try {
-      return oauthStatusHint(readOAuthCredentials(env), Date.now());
-    } catch {
-      return [];
-    }
-  },
-
   notes: [
     {
       title: "Claude Pro/Max — local transcripts, no API",
       text: "Anthropic has no usage API for personal subscriptions. This card parses the session logs Claude Code writes under ~/.claude/projects — the same source ccusage reads — so nothing is sent anywhere and no key is needed.",
     },
     {
-      title: "5-hour session blocks",
-      text: "Usage metering runs in 5-hour blocks anchored at your first prompt after a break; a turn five hours after the block started opens a new one. Plan limits are unpublished, so the card shows absolute tokens instead of a percentage. Weekly limits aren't derivable from transcripts.",
+      title: "5-hour and weekly windows",
+      text: "Token totals come from local transcripts. Session (5h) and weekly percentages and reset times come from `claude -p \"/usage\"` (parsed defensively; a failed parse is archived and marked stale). An optional StopFailure hook (scripts/claude-rate-limit-hook.ts) records the exact reset time when a turn hits a rate limit. Set CLAUDE_USAGE=0 to skip the command.",
     },
     {
       title: "Scope & counting",
@@ -421,24 +411,10 @@ export const claudeAdapter: Adapter = {
       },
     ];
 
-    // Opportunistic live-quota poll: only when a plausibly-fresh OAuth token exists.
-    const creds = readOAuthCredentials(ctx.env, { nowMs: now });
-    const expired = creds.expiresAt !== null && creds.expiresAt <= now;
-    if (creds.token !== null && !expired) {
-      const base = (ctx.env.ANTHROPIC_OAUTH_BASE_URL ?? "https://api.anthropic.com").replace(/\/$/, "");
-      polls.push(
-        await fetchPoll(ctx, {
-          endpoint: "oauth-usage",
-          url: `${base}${OAUTH_USAGE_PATH}`,
-          headers: {
-            Authorization: `Bearer ${creds.token}`,
-            "anthropic-beta": "oauth-2025-04-20",
-            Accept: "application/json",
-          },
-          optional: true,
-        }),
-      );
-    }
+    const usage = await readUsageCommand(ctx);
+    if (usage) polls.push(usage);
+    const hook = readHookPoll(ctx);
+    if (hook) polls.push(hook);
     return polls;
   },
 
@@ -452,25 +428,18 @@ export const claudeAdapter: Adapter = {
 
     const points: UsagePoint[] = [];
 
-    // Live quota from Anthropic's OAuth usage endpoint when the poll succeeded.
-    const usage = polls.find((p) => p.endpoint === "oauth-usage" && p.status === 200);
-    const oauth = usage !== undefined ? parseOAuthUsage(usage.json) : null;
-    if (oauth?.fiveHour !== null && oauth?.fiveHour !== undefined) {
-      points.push(blankPoint(capturedAt, "claude-5h-percent", "quota", "percent", {
-        used: oauth.fiveHour.percent,
-        limit: 100,
-        remaining: Math.max(0, 100 - oauth.fiveHour.percent),
-        reset_at: oauth.fiveHour.resetsAt,
-        window_end: oauth.fiveHour.resetsAt,
-      }));
-    }
-    if (oauth?.weekly !== null && oauth?.weekly !== undefined) {
-      points.push(blankPoint(capturedAt, "claude-weekly-percent", "quota", "percent", {
-        used: oauth.weekly.percent,
-        limit: 100,
-        remaining: Math.max(0, 100 - oauth.weekly.percent),
-        reset_at: oauth.weekly.resetsAt,
-        window_end: oauth.weekly.resetsAt,
+    for (const w of mergeClaudeWindows(polls, capturedAt)) {
+      const label = w.window === "five_hour" ? "claude-5h-percent" : "claude-weekly-percent";
+      points.push(blankPoint(capturedAt, label, "quota", "percent", {
+        used: w.usedPercent,
+        limit: w.usedPercent === null ? null : 100,
+        remaining: w.usedPercent === null ? null : Math.max(0, 100 - w.usedPercent),
+        reset_at: w.resetsAt,
+        window_end: w.resetsAt,
+        quota_window: w.window,
+        source: w.source,
+        stale: w.stale,
+        used_percent: w.usedPercent,
       }));
     }
 
@@ -518,6 +487,155 @@ export const claudeAdapter: Adapter = {
     return points;
   },
 };
+
+const HOOK_MAX_AGE_MS = 14 * 86_400_000;
+
+export function hookFilePath(env: Record<string, string | undefined>): string {
+  const custom = env.MODELIZER_CLAUDE_HOOK_FILE?.trim();
+  if (custom) return custom.replace(/^~/, homedir());
+  return join(homedir(), ".modelizer", "claude-rate-limit.json");
+}
+
+async function readUsageCommand(ctx: CollectContext): Promise<RawPoll | null> {
+  if (ctx.env.CLAUDE_USAGE === "0") return null;
+  const file = ctx.env.CLAUDE_USAGE_FILE?.trim();
+  if (file) {
+    try {
+      const text = readFileSync(file, "utf8");
+      return usagePoll(`file://${file}`, text, ctx.now);
+    } catch (err) {
+      const message = (err as Error).message;
+      return {
+        endpoint: "usage-command",
+        url: `file://${file}`,
+        status: 0,
+        body: message,
+        json: { stale: true, windows: [], error: message },
+        headers: {},
+        optional: true,
+      };
+    }
+  }
+  const bin = ctx.env.CLAUDE_BIN?.trim() || "claude";
+  const result = await runCommand(bin, ["-p", "/usage"], 20_000);
+  if (result.missing) {
+    ctx.log("claude: `claude` binary unavailable; transcripts only");
+    return null;
+  }
+  if (result.error && result.stdout.trim() === "") {
+    ctx.log(`claude: usage command failed (${result.error}); marking windows stale`);
+    return {
+      endpoint: "usage-command",
+      url: "claude -p /usage",
+      status: 0,
+      body: result.error,
+      json: { stale: true, windows: [], error: result.error },
+      headers: {},
+      optional: true,
+    };
+  }
+  return usagePoll("claude -p /usage", result.stdout, ctx.now);
+}
+
+function usagePoll(url: string, text: string, now: Date): RawPoll {
+  const parsed = parseUsageText(text, now);
+  const stale = parsed.windows.length === 0;
+  return {
+    endpoint: "usage-command",
+    url,
+    status: 200,
+    body: text,
+    json: { stale, windows: parsed.windows },
+    headers: {},
+    optional: true,
+  };
+}
+
+function readHookPoll(ctx: CollectContext): RawPoll | null {
+  const path = hookFilePath(ctx.env);
+  if (!existsSync(path)) return null;
+  let text = "";
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return {
+      endpoint: "usage-hook",
+      url: `file://${path}`,
+      status: 0,
+      body: (err as Error).message,
+      json: null,
+      headers: {},
+      optional: true,
+    };
+  }
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  return {
+    endpoint: "usage-hook",
+    url: `file://${path}`,
+    status: json ? 200 : 422,
+    body: text,
+    json,
+    headers: {},
+    optional: true,
+  };
+}
+
+interface ClaudeWindow {
+  window: "five_hour" | "weekly";
+  usedPercent: number | null;
+  resetsAt: string | null;
+  source: string;
+  stale: boolean;
+}
+
+function mergeClaudeWindows(polls: RawPoll[], capturedAt: string): ClaudeWindow[] {
+  const map = new Map<string, ClaudeWindow>();
+  const usage = polls.find((p) => p.endpoint === "usage-command");
+  if (usage) {
+    const body = usage.json as { stale?: boolean; windows?: ParsedUsageWindow[] } | null;
+    const windows = body?.windows ?? [];
+    if (usage.status !== 200 || body?.stale === true || windows.length === 0) {
+      for (const window of ["five_hour", "weekly"] as const) {
+        map.set(window, { window, usedPercent: null, resetsAt: null, source: "usage-command", stale: true });
+      }
+    } else {
+      for (const w of windows) {
+        map.set(w.window, {
+          window: w.window,
+          usedPercent: w.usedPercent,
+          resetsAt: w.resetsAt,
+          source: "usage-command",
+          stale: false,
+        });
+      }
+    }
+  }
+
+  const hookPoll = polls.find((p) => p.endpoint === "usage-hook" && p.status === 200);
+  const hook = hookPoll?.json as HookRecord | null;
+  if (hook && hook.error === "rate_limit" && typeof hook.resetsAt === "string") {
+    const recorded = Date.parse(hook.recordedAt);
+    const resets = Date.parse(hook.resetsAt);
+    const fresh = Number.isFinite(recorded) && Date.parse(capturedAt) - recorded < HOOK_MAX_AGE_MS && resets > Date.parse(capturedAt);
+    if (fresh) {
+      const key = hook.window ?? "five_hour";
+      const existing = map.get(key);
+      map.set(key, {
+        window: key,
+        usedPercent: existing?.usedPercent ?? 100,
+        resetsAt: new Date(resets).toISOString(),
+        source: "hook",
+        stale: false,
+      });
+    }
+  }
+  return [...map.values()];
+}
 
 function blankPoint(
   capturedAt: string,
