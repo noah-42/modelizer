@@ -31,6 +31,7 @@ Secrets live only in `.env` (or your shell) — never in the config file or the 
 | `bun run scripts/mock-openrouter.ts` | Fake OpenRouter on :9801 for UI dev |
 | `bun run scripts/mock-claude.ts` | Fake Claude Code transcripts under `data/mock-claude` for UI dev |
 | `bun run scripts/mock-codex.ts` | Fake Codex session logs under `data/mock-codex` for UI dev |
+| `bun scripts/claude-statusline.ts` | Optional Claude Code statusLine command (records `rate_limits`) |
 | `bun scripts/claude-rate-limit-hook.ts` | Optional Claude Code StopFailure hook (records a rate-limit reset) |
 
 Point a provider at the mock with `OPENROUTER_BASE_URL=http://127.0.0.1:9801` and any non-empty
@@ -43,8 +44,8 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/overview` — one object per provider: state (last poll, errors, staleness) + latest points.
   Each provider also has `windows[]`: `{ window, usedPercent, resetsAt, source, stale }` for the
   authoritative quota windows (`five_hour`, `weekly`, and Z.AI's `monthly` / `mcp`). `source` is
-  `app-server`, `session-log`, `usage-command`, `hook`, or `zai-api`. `stale` is true when a
-  Claude `/usage` parse failed or a Codex/Z.AI reset was rolled forward or discarded.
+  `statusline`, `app-server`, `session-log`, `usage-command`, `hook`, or `zai-api`. `stale` is true when a
+  Claude source is missing or unsupported, or a Codex/Z.AI reset was rolled forward or discarded.
 - `GET /api/providers/:id/points?days=30` — point history
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
@@ -120,19 +121,35 @@ Each provider is an adapter (`src/adapters/`) with a stability tier:
   shows staleness instead of hiding it. Modelizer does not call undocumented OAuth usage
   endpoints and does not scrape claude.ai or chatgpt.com.
 - **T3** local files and local CLIs. Claude Code transcripts under `~/.claude/projects` supply
-  token counts. Reset times come from `claude -p "/usage"` (prose; archived; marked stale if
-  parsing fails) and, optionally, a StopFailure hook. Codex prefers the documented
+  token counts. Quota windows prefer the statusLine file, then `claude -p /usage --output-format json`
+  (stdin closed, 5s timeout; "Unknown skill" or empty output is stale and skipped for 6 hours),
+  then a StopFailure hook. Codex prefers the documented
   `codex app-server` method `account/rateLimits/read` (no model turn) and falls back to
   `token_count` rate-limit snapshots in `~/.codex/sessions`. Windows are identified by length
   (300 minutes = 5h, 10080 = weekly), not by primary/secondary slot.
 - **T4** UI-only, no programmatic path (ChatGPT subscription, OpenCode Zen credits — placeholder cards)
 
-### Claude Code reset hook
+### Claude Code quota windows
 
-Transcripts do not include a reset time. `claude -p "/usage"` is the regular reader. When a turn
-dies on a rate limit, Claude Code can also run a StopFailure hook that writes the message's
-reset time to `~/.modelizer/claude-rate-limit.json` (override with `MODELIZER_CLAUDE_HOOK_FILE`).
-Modelizer prefers that exact instant for the matching window. Add this to `~/.claude/settings.json`:
+Transcripts do not include a reset time. Modelizer reads three local sources, in order:
+
+1. **Status line** (preferred). `scripts/claude-statusline.ts` reads the JSON Claude Code passes to a statusLine command and, when `rate_limits` is present, writes `~/.modelizer/claude-statusline.json`. Those fields (`five_hour` / `seven_day` `used_percentage` and `resets_at`) shipped in Claude Code 2.1.80. Older builds omit them; the script still exits 0 and modelizer ignores the file. A snapshot older than 6 hours is ignored. Add this to `~/.claude/settings.json`. If you already have a statusLine command, put it after `--` so this script records the limits and then runs yours with the same JSON on stdin:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bun /absolute/path/to/modelizer/scripts/claude-statusline.ts -- ~/.claude/statusline.sh",
+    "refreshInterval": 60
+  }
+}
+```
+
+Drop the `-- …` part when you have no existing command. Stdout is then a short line such as `5h 23% · 7d 41%`.
+
+2. **`claude -p /usage --output-format json`**. Stdin is closed and the process is killed after 5 seconds, so it cannot hang the scheduler. On Claude Code 2.1.7 this returns `Unknown skill: usage` at zero cost. That result, or empty output, marks both windows stale and is not retried for 6 hours. A fixture of that response is `fixtures/claude-unknown-skill.json`. Set `CLAUDE_USAGE=0` to skip the command.
+
+3. **StopFailure hook.** When a turn dies on a rate limit, the hook writes the message's reset time to `~/.modelizer/claude-rate-limit.json` (override with `MODELIZER_CLAUDE_HOOK_FILE`). That exact instant overrides the matching window from the sources above. Add this to `~/.claude/settings.json`:
 
 ```json
 {

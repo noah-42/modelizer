@@ -9,7 +9,11 @@ export interface CommandResult {
   missing: boolean;
 }
 
-/** Run a local CLI. Stdout is capped so a noisy process cannot fill memory. */
+/**
+ * Run a local CLI. Stdin is closed (`ignore`, same as `</dev/null`) so a prompt
+ * cannot wait for input. The timer always settles the promise, then SIGKILL.
+ * Stdout is capped so a noisy process cannot fill memory.
+ */
 export function runCommand(command: string, args: string[], timeoutMs: number): Promise<CommandResult> {
   return new Promise((resolve) => {
     let settled = false;
@@ -23,6 +27,7 @@ export function runCommand(command: string, args: string[], timeoutMs: number): 
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
+      child.unref();
       finish({ code: null, stdout, stderr, error: "timeout", missing: false });
     }, timeoutMs);
     child.stdout?.on("data", (buf: Buffer) => {

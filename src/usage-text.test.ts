@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseResetMention, parseUsageText, recordFromHookPayload, zonedTimeToUtc } from "./usage-text";
+import { readFileSync } from "node:fs";
+import { parseResetMention, parseUsageText, recordFromHookPayload, statuslineText, usageUnsupportedReason, windowsFromRateLimits, zonedTimeToUtc } from "./usage-text";
 
 const NOW = new Date("2026-10-18T12:00:00.000Z");
 
@@ -82,5 +83,35 @@ describe("recordFromHookPayload", () => {
     expect(rec?.resetsAt).toBe("2026-10-20T18:00:00.000Z");
     expect(recordFromHookPayload({ error: "overloaded", message: "nope" }, NOW)).toBeNull();
     expect(recordFromHookPayload(null, NOW)).toBeNull();
+  });
+});
+
+describe("usage command support", () => {
+  test("unknown skill and empty output are unsupported; prose is not", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../fixtures/claude-unknown-skill.json", import.meta.url), "utf8")) as { result: string };
+    expect(fixture.result).toBe("Unknown skill: usage");
+    expect(usageUnsupportedReason(JSON.stringify(fixture))).toBe("unknown-skill");
+    expect(usageUnsupportedReason("   ")).toBe("empty");
+    expect(usageUnsupportedReason("Session: 10% used")).toBeNull();
+    expect(parseUsageText(JSON.stringify(fixture), NOW).windows).toEqual([]);
+  });
+});
+
+describe("status line rate_limits", () => {
+  test("reads five_hour and seven_day, and ignores a payload that omits them", () => {
+    const windows = windowsFromRateLimits({
+      five_hour: { used_percentage: 23.5, resets_at: 1760834838 },
+      seven_day: { used_percentage: "61", resets_at: "2026-10-24T20:44:22Z" },
+    });
+    expect(windows).toEqual([
+      { window: "five_hour", usedPercent: 23.5, resetsAt: new Date(1760834838 * 1000).toISOString() },
+      { window: "weekly", usedPercent: 61, resetsAt: "2026-10-24T20:44:22.000Z" },
+    ]);
+    expect(statuslineText(windows)).toBe("5h 24% · 7d 61%");
+    expect(windowsFromRateLimits(undefined)).toEqual([]);
+    expect(windowsFromRateLimits({ five_hour: { resets_at: 0 } })).toEqual([]);
+    expect(windowsFromRateLimits({ five_hour: { used_percentage: 0 } })).toEqual([
+      { window: "five_hour", usedPercent: 0, resetsAt: null },
+    ]);
   });
 });
