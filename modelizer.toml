@@ -22,8 +22,9 @@ enabled = true
 # [providers.copilot]
 # enabled = true
 
-# Claude Pro/Max — transcripts under ~/.claude/projects, plus `claude -p "/usage"` for
-# reset times. Optional StopFailure hook: scripts/claude-rate-limit-hook.ts.
+# Claude Pro/Max — transcripts under ~/.claude/projects. Quota windows: statusLine
+# script (scripts/claude-statusline.ts), then `claude -p /usage --output-format json`,
+# then the StopFailure hook (scripts/claude-rate-limit-hook.ts).
 [providers.claude]
 enabled = true
 

@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runCommand } from "../proc";
-import { parseUsageText, type HookRecord, type ParsedUsageWindow } from "../usage-text";
+import { parseUsageText, usageUnsupportedReason, windowsFromRateLimits, type HookRecord, type ParsedUsageWindow } from "../usage-text";
 import { NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsagePoint } from "./types";
 
@@ -25,10 +25,13 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsageP
  * block. Verified 2026-10-06 against Claude Code's /usage: the block anchored at 21:52 (first
  * response) while Anthropic's window reset matched 21:40 (the prompt) — so blocks snap to the
  * latest user-entry timestamp preceding their first assistant turn.
- * Weekly limits and real reset times are not in the transcripts. Those come from
- * `claude -p "/usage"` (local CLI, zero-token slash command; prose is parsed
- * defensively and archived) and, when installed, a StopFailure hook that records
- * the rate-limit message's reset time. The undocumented OAuth usage endpoint is
+ * Weekly limits and real reset times are not in the transcripts. Preferred source
+ * is the optional statusLine script (scripts/claude-statusline.ts), which records
+ * `rate_limits` when Claude Code sends them (v2.1.80+). Next is
+ * `claude -p /usage --output-format json` (stdin closed, short timeout). On
+ * Claude Code 2.1.7 that command returns "Unknown skill: usage"; that and empty
+ * output are marked stale and not retried for several hours. A StopFailure hook
+ * can still override the reset time. The undocumented OAuth usage endpoint is
  * not called — it would copy a Claude.ai login token.
  * Everything is aggregate-only: no message text, session ids, or project paths leave collect().
  */
@@ -40,7 +43,7 @@ const SCAN_MS = 8 * 86_400_000;
 /**
  * OAuth credential helpers are retained for diagnostics only. collect() does not call
  * api.anthropic.com/api/oauth/usage — that endpoint is undocumented and needs a copied
- * login token. Live windows come from `claude -p "/usage"` and the optional hook file.
+ * login token. Live windows come from the status line file, then the usage command, then the hook file.
  */
 
 export interface OAuthCredentials {
@@ -367,7 +370,7 @@ export const claudeAdapter: Adapter = {
     },
     {
       title: "5-hour and weekly windows",
-      text: "Token totals come from local transcripts. Session (5h) and weekly percentages and reset times come from `claude -p \"/usage\"` (parsed defensively; a failed parse is archived and marked stale). An optional StopFailure hook (scripts/claude-rate-limit-hook.ts) records the exact reset time when a turn hits a rate limit. Set CLAUDE_USAGE=0 to skip the command.",
+      text: "Token totals come from local transcripts. Session (5h) and weekly percentages come first from the optional statusLine script (scripts/claude-statusline.ts; rate_limits on Claude Code 2.1.80+). Otherwise `claude -p /usage --output-format json` is tried with stdin closed and a short timeout. \"Unknown skill\" or empty output is marked stale and not retried for 6 hours. A StopFailure hook can still record an exact reset. Set CLAUDE_USAGE=0 to skip the command.",
     },
     {
       title: "Scope & counting",
@@ -411,6 +414,8 @@ export const claudeAdapter: Adapter = {
       },
     ];
 
+    const statusline = readStatuslinePoll(ctx);
+    if (statusline) polls.push(statusline);
     const usage = await readUsageCommand(ctx);
     if (usage) polls.push(usage);
     const hook = readHookPoll(ctx);
@@ -489,20 +494,39 @@ export const claudeAdapter: Adapter = {
 };
 
 const HOOK_MAX_AGE_MS = 14 * 86_400_000;
+/** Status-line snapshots older than this are ignored; the file only updates while Claude Code is open. */
+export const STATUSLINE_MAX_AGE_MS = 6 * 3_600_000;
+/** "Unknown skill" / empty / hung `/usage` is not retried on every poll. */
+export const USAGE_UNSUPPORTED_BACKOFF_MS = 6 * 3_600_000;
+/** Stdin is closed by runCommand (`stdio: "ignore"`). JSON mode returns in well under this on 2.1.7. */
+export const USAGE_COMMAND_TIMEOUT_MS = 5_000;
+export const CLAUDE_USAGE_ARGS = ["-p", "/usage", "--output-format", "json"] as const;
 
 export function hookFilePath(env: Record<string, string | undefined>): string {
-  const custom = env.MODELIZER_CLAUDE_HOOK_FILE?.trim();
-  if (custom) return custom.replace(/^~/, homedir());
-  return join(homedir(), ".modelizer", "claude-rate-limit.json");
+  return envPath(env.MODELIZER_CLAUDE_HOOK_FILE, join(homedir(), ".modelizer", "claude-rate-limit.json"));
+}
+
+function statuslineFilePath(env: Record<string, string | undefined>): string {
+  return envPath(env.MODELIZER_CLAUDE_STATUSLINE_FILE, join(homedir(), ".modelizer", "claude-statusline.json"));
+}
+
+function usageStatePath(env: Record<string, string | undefined>): string {
+  return envPath(env.MODELIZER_CLAUDE_USAGE_STATE, join(homedir(), ".modelizer", "claude-usage-command.json"));
+}
+
+function envPath(custom: string | undefined, fallback: string): string {
+  const trimmed = custom?.trim();
+  if (trimmed) return trimmed.replace(/^~/, homedir());
+  return fallback;
 }
 
 async function readUsageCommand(ctx: CollectContext): Promise<RawPoll | null> {
   if (ctx.env.CLAUDE_USAGE === "0") return null;
+  if (usageBackoffActive(ctx.env, ctx.now)) return null;
   const file = ctx.env.CLAUDE_USAGE_FILE?.trim();
   if (file) {
     try {
-      const text = readFileSync(file, "utf8");
-      return usagePoll(`file://${file}`, text, ctx.now);
+      return finishUsage(ctx, `file://${file}`, readFileSync(file, "utf8"), null);
     } catch (err) {
       const message = (err as Error).message;
       return {
@@ -517,24 +541,106 @@ async function readUsageCommand(ctx: CollectContext): Promise<RawPoll | null> {
     }
   }
   const bin = ctx.env.CLAUDE_BIN?.trim() || "claude";
-  const result = await runCommand(bin, ["-p", "/usage"], 20_000);
+  const result = await runCommand(bin, [...CLAUDE_USAGE_ARGS], USAGE_COMMAND_TIMEOUT_MS);
   if (result.missing) {
     ctx.log("claude: `claude` binary unavailable; transcripts only");
     return null;
   }
-  if (result.error && result.stdout.trim() === "") {
-    ctx.log(`claude: usage command failed (${result.error}); marking windows stale`);
+  const hung = result.error === "timeout" ? "timeout" as const : null;
+  return finishUsage(ctx, "claude -p /usage --output-format json", result.stdout, hung);
+}
+
+function finishUsage(
+  ctx: CollectContext,
+  url: string,
+  text: string,
+  hung: "timeout" | null,
+): RawPoll {
+  const reason = hung ?? usageUnsupportedReason(text);
+  if (reason !== null) {
+    rememberUsageUnsupported(ctx, reason);
+    ctx.log(`claude: /usage unsupported (${reason}); not retrying for ${USAGE_UNSUPPORTED_BACKOFF_MS / 3_600_000}h`);
     return {
       endpoint: "usage-command",
-      url: "claude -p /usage",
-      status: 0,
-      body: result.error,
-      json: { stale: true, windows: [], error: result.error },
+      url,
+      status: 200,
+      body: text === "" ? reason : text,
+      json: { stale: true, unsupported: true, reason, windows: [] },
       headers: {},
       optional: true,
     };
   }
-  return usagePoll("claude -p /usage", result.stdout, ctx.now);
+  return usagePoll(url, text, ctx.now);
+}
+
+function usageBackoffActive(env: Record<string, string | undefined>, now: Date): boolean {
+  const path = usageStatePath(env);
+  if (!existsSync(path)) return false;
+  try {
+    const json = JSON.parse(readFileSync(path, "utf8")) as { until?: unknown };
+    const until = typeof json.until === "string" ? Date.parse(json.until) : NaN;
+    return Number.isFinite(until) && until > now.getTime();
+  } catch {
+    return false;
+  }
+}
+
+function rememberUsageUnsupported(ctx: CollectContext, reason: string): void {
+  const path = usageStatePath(ctx.env);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const body = JSON.stringify({
+      until: new Date(ctx.now.getTime() + USAGE_UNSUPPORTED_BACKOFF_MS).toISOString(),
+      reason,
+      detectedAt: ctx.now.toISOString(),
+    });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${body}\n`);
+    renameSync(tmp, path);
+  } catch (err) {
+    ctx.log(`claude: could not record usage backoff (${(err as Error).message})`);
+  }
+}
+
+function readStatuslinePoll(ctx: CollectContext): RawPoll | null {
+  const path = statuslineFilePath(ctx.env);
+  if (!existsSync(path)) return null;
+  let text = "";
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return {
+      endpoint: "usage-statusline",
+      url: `file://${path}`,
+      status: 0,
+      body: (err as Error).message,
+      json: { fresh: false, windows: [] },
+      headers: {},
+      optional: true,
+    };
+  }
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  const record = json !== null && typeof json === "object" ? json as Record<string, unknown> : null;
+  const recordedAt = typeof record?.recordedAt === "string" ? Date.parse(record.recordedAt) : NaN;
+  const age = ctx.now.getTime() - recordedAt;
+  const freshClock = Number.isFinite(recordedAt) && age >= -60_000 && age <= STATUSLINE_MAX_AGE_MS;
+  const windows = freshClock && record
+    ? windowsFromRateLimits(record.rate_limits).filter((w) => w.resetsAt === null || Date.parse(w.resetsAt) > ctx.now.getTime())
+    : [];
+  return {
+    endpoint: "usage-statusline",
+    url: `file://${path}`,
+    status: record ? 200 : 422,
+    body: text,
+    json: { fresh: freshClock && windows.length > 0, windows },
+    headers: {},
+    optional: true,
+  };
 }
 
 function usagePoll(url: string, text: string, now: Date): RawPoll {
@@ -595,23 +701,43 @@ interface ClaudeWindow {
 
 function mergeClaudeWindows(polls: RawPoll[], capturedAt: string): ClaudeWindow[] {
   const map = new Map<string, ClaudeWindow>();
+
+  const status = polls.find((p) => p.endpoint === "usage-statusline" && p.status === 200);
+  const statusBody = status?.json as { fresh?: boolean; windows?: ParsedUsageWindow[] } | null;
+  if (statusBody?.fresh === true && Array.isArray(statusBody.windows)) {
+    for (const w of statusBody.windows) {
+      map.set(w.window, {
+        window: w.window,
+        usedPercent: w.usedPercent,
+        resetsAt: w.resetsAt,
+        source: "statusline",
+        stale: false,
+      });
+    }
+  }
+
   const usage = polls.find((p) => p.endpoint === "usage-command");
   if (usage) {
     const body = usage.json as { stale?: boolean; windows?: ParsedUsageWindow[] } | null;
     const windows = body?.windows ?? [];
-    if (usage.status !== 200 || body?.stale === true || windows.length === 0) {
-      for (const window of ["five_hour", "weekly"] as const) {
-        map.set(window, { window, usedPercent: null, resetsAt: null, source: "usage-command", stale: true });
+    const bad = usage.status !== 200 || body?.stale === true || windows.length === 0;
+    if (!bad) {
+      for (const w of windows) {
+        if (!map.has(w.window)) {
+          map.set(w.window, {
+            window: w.window,
+            usedPercent: w.usedPercent,
+            resetsAt: w.resetsAt,
+            source: "usage-command",
+            stale: false,
+          });
+        }
       }
     } else {
-      for (const w of windows) {
-        map.set(w.window, {
-          window: w.window,
-          usedPercent: w.usedPercent,
-          resetsAt: w.resetsAt,
-          source: "usage-command",
-          stale: false,
-        });
+      for (const window of ["five_hour", "weekly"] as const) {
+        if (!map.has(window)) {
+          map.set(window, { window, usedPercent: null, resetsAt: null, source: "usage-command", stale: true });
+        }
       }
     }
   }

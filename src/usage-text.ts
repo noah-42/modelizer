@@ -1,8 +1,8 @@
 /**
- * Defensive parser for Claude Code `/usage` prose and rate-limit messages.
- * Headless `claude -p "/usage"` output is undocumented, so this accepts several
- * shapes (sectioned prose, one-liners, and a JSON object) and returns nothing
- * when it cannot find a window — callers mark that poll stale.
+ * Defensive parser for Claude Code `/usage` prose, the CLI's JSON result, and
+ * status-line `rate_limits`. Headless `/usage` is not a supported skill on
+ * current Claude Code; "Unknown skill" and empty output are unsupported, not a
+ * quota report. Status-line fields are optional on older builds.
  */
 
 export type UsageWindowId = "five_hour" | "weekly";
@@ -41,6 +41,40 @@ const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
+
+/** Why `claude -p /usage` should not be retried every poll. Null means "try to parse". */
+export function usageUnsupportedReason(text: string): "unknown-skill" | "empty" | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return "empty";
+  if (/unknown skill/i.test(trimmed)) return "unknown-skill";
+  return null;
+}
+
+/**
+ * `rate_limits` from a Claude Code statusLine payload (v2.1.80+).
+ * Missing `rate_limits`, `five_hour`, or `seven_day` yields no window — older builds omit them.
+ */
+export function windowsFromRateLimits(rateLimits: unknown): ParsedUsageWindow[] {
+  if (rateLimits === null || typeof rateLimits !== "object") return [];
+  const root = rateLimits as Record<string, unknown>;
+  const out: ParsedUsageWindow[] = [];
+  const five = readLimitWindow(root.five_hour);
+  const week = readLimitWindow(root.seven_day);
+  if (five) out.push({ window: "five_hour", usedPercent: five.usedPercent, resetsAt: five.resetsAt });
+  if (week) out.push({ window: "weekly", usedPercent: week.usedPercent, resetsAt: week.resetsAt });
+  return out;
+}
+
+/** Short status-line text. Empty when no percentage is present. */
+export function statuslineText(windows: ParsedUsageWindow[]): string {
+  const bits: string[] = [];
+  for (const w of windows) {
+    if (w.usedPercent === null) continue;
+    const label = w.window === "five_hour" ? "5h" : "7d";
+    bits.push(`${label} ${Math.round(w.usedPercent)}%`);
+  }
+  return bits.join(" · ");
+}
 
 export function parseUsageText(text: string, now: Date): { windows: ParsedUsageWindow[] } {
   const trimmed = text.trim();
@@ -301,6 +335,38 @@ function windowFromToken(v: unknown): UsageWindowId | null {
   if (typeof v !== "string") return null;
   if (v === "five_hour" || v === "session" || v === "fiveHour") return "five_hour";
   if (v === "weekly" || v === "seven_day" || v === "sevenDay") return "weekly";
+  return null;
+}
+
+function readLimitWindow(v: unknown): { usedPercent: number | null; resetsAt: string | null } | null {
+  if (v === null || typeof v !== "object") return null;
+  const b = v as Record<string, unknown>;
+  const usedPercent = finiteNum(b.used_percentage ?? b.usedPercent ?? b.utilization);
+  const resetsAt = limitResetIso(b.resets_at ?? b.resetsAt);
+  if (usedPercent === null && resetsAt === null) return null;
+  return { usedPercent, resetsAt };
+}
+
+function finiteNum(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+/** Unix seconds, unix ms, or ISO. Zero and unparsable values are absent, not epoch. */
+function limitResetIso(v: unknown): string | null {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    if (v <= 0) return null;
+    return new Date(v > 1e12 ? v : v * 1000).toISOString();
+  }
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (trimmed === "") return null;
+    if (/^\d+(\.\d+)?$/.test(trimmed)) return limitResetIso(Number(trimmed));
+    const parsed = Date.parse(trimmed);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return new Date(parsed).toISOString();
+  }
   return null;
 }
 

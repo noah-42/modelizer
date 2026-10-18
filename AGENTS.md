@@ -32,7 +32,7 @@ plans/                MOD plans (see plans/INDEX.md)
 | Register a provider | `src/adapters/<id>.ts` and `src/adapters/index.ts` |
 | Overview windows | `src/windows.ts`, `src/api.ts` |
 | Codex rate limits | `src/adapters/codex-app-server.ts`, `codex-limits.ts`, `codex.ts` |
-| Claude resets | `src/adapters/claude.ts`, `src/usage-text.ts`, `scripts/claude-rate-limit-hook.ts` |
+| Claude resets | `src/adapters/claude.ts`, `src/usage-text.ts`, `scripts/claude-statusline.ts`, `scripts/claude-rate-limit-hook.ts` |
 | Z.AI limits | `src/adapters/zai.ts` |
 | Reset notices / ntfy | `src/notify.ts` |
 | Schema | `src/db.ts` |
@@ -48,7 +48,8 @@ plans/                MOD plans (see plans/INDEX.md)
 - One provider's failure never changes another's schedule or card.
 - `ADAPTERS` array order is dashboard order.
 - Set `quota_window` only on authoritative quota windows. Transcript token estimates leave it empty.
-- Stability tiers: **T1** official documented API (OpenRouter). **T2** undocumented community endpoints (Z.AI; Cursor and Copilot when added) — isolate failures, archive raw bodies, show staleness. **T3** local files and CLIs (Claude transcripts + `claude -p "/usage"`, Codex `account/rateLimits/read` with session logs as fallback). **T4** no programmatic path (placeholder cards).
+- Stability tiers: **T1** official documented API (OpenRouter). **T2** undocumented community endpoints (Z.AI; Cursor and Copilot when added) — isolate failures, archive raw bodies, show staleness. **T3** local files and CLIs (Claude transcripts, then status line, `claude -p /usage --output-format json`, and the StopFailure hook; Codex `account/rateLimits/read` with session logs as fallback). **T4** no programmatic path (placeholder cards).
+- Claude `/usage` runs with stdin closed and a 5s timeout. "Unknown skill" or empty output is stale and is not retried for 6 hours. Do not let that command hang the scheduler.
 - Codex windows follow length (300 minutes = 5-hour, 10080 = weekly), not the primary/secondary slot. Do not invent a reset from the window length.
 - Secrets resolve from the environment, then the macOS keychain service `modelizer`. They stay out of `modelizer.toml`, the database, logs, URLs, and API responses. `.env` is gitignored; if used, `chmod 600`.
 - Egress is the adapter's documented endpoints only, key in the `Authorization` header, TLS. Do not call undocumented OAuth usage endpoints. Do not scrape claude.ai or chatgpt.com.
@@ -83,6 +84,8 @@ plans/                MOD plans (see plans/INDEX.md)
 | `bun run scripts/mock-claude.ts` | Fake Claude transcripts + usage fixture |
 | `bun run scripts/mock-codex.ts` | Fake Codex session logs + app-server fixture |
 | `bun run scripts/mock-zai.ts` | Fake Z.AI |
+| `bun scripts/claude-statusline.ts` | Optional Claude Code statusLine command |
+| `bun scripts/claude-rate-limit-hook.ts` | Optional Claude Code StopFailure hook |
 
 Run `bun test` and `bun run typecheck` before handing work off.
 
