@@ -1,0 +1,430 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { NormalizeError } from "./types";
+import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
+
+/**
+ * OpenAI via Codex (ChatGPT subscription) — stability tier 3: local files, no API.
+ * ChatGPT-plan usage has no API surface (the documented Admin API only covers platform-org
+ * billing), but Codex writes per-turn usage into its session logs. Shape verified on
+ * 2026-10-12 against live ~/.codex/sessions files:
+ *
+ * ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl — one JSON object per line with
+ * top-level { timestamp: ISO, ordinal, type, payload }. Relevant entries:
+ *   turn_context  payload.model ("gpt-6.1-sol"), payload.model_reasoning_effort ("low")
+ *   token_usage_record
+ *     payload: { session_id, turn_id, response_id,
+ *       turn_token_usage: { input_tokens (INCLUDES cached), cached_input_tokens,
+ *         cache_write_input_tokens, output_tokens (includes reasoning), total_tokens
+ *         = input + output } }
+ * Exactly one record per turn (verified: zero duplicates across all files); deduped anyway.
+ *
+ * Real quota telemetry: event_msg entries whose payload carries `rate_limits` (verified
+ * 2026-10-13 against live files) — OpenAI's own view of the plan windows:
+ *   rate_limits: { primary: { used_percent, window_minutes (300 = 5h), resets_at (epoch SECONDS) },
+ *                  secondary: { ... window_minutes 10080 = week }, credits: { has_credits, balance },
+ *                  plan_type: "plus" }
+ * The latest snapshot across all scanned files wins. 5-hour window: same rolling block as
+ * Claude — anchored at the first turn record after a ≥5h gap; the next turn at/after anchor+5h
+ * opens a new block. Model attribution follows turn_context entries in file order (model can
+ * change mid-thread via settings). Aggregate-only: no prompts, paths, or session ids leave
+ * collect().
+ */
+
+const BLOCK_MS = 5 * 3_600_000;
+/** Scan window: the 5h block plus daily history for the UI's 7-day per-model section. */
+const SCAN_MS = 8 * 86_400_000;
+
+export interface CodexRateLimitWindow {
+  usedPercent: number;
+  windowMinutes: number;
+  resetsAt: string;
+}
+
+export interface CodexRateLimits {
+  observedAt: string;
+  planType: string | null;
+  primary: CodexRateLimitWindow | null;
+  secondary: CodexRateLimitWindow | null;
+}
+
+export interface CodexBlockSummary {
+  start: string;
+  end: string;
+  used: number;
+  requests: number;
+}
+
+export interface CodexDailySummary {
+  day: string;
+  model: string;
+  used: number;
+  inTokens: number;
+  outTokens: number;
+  requests: number;
+}
+
+export interface CodexSummary {
+  files: number;
+  turns: number;
+  duplicates: number;
+  unparsableLines: number;
+  firstTimestamp: string | null;
+  lastTimestamp: string | null;
+  /** Last few blocks, oldest first; the final one is the active block. */
+  blocks: CodexBlockSummary[];
+  daily: CodexDailySummary[];
+  /** OpenAI's own rate-limit telemetry from the newest event_msg that carried it. */
+  rateLimits: CodexRateLimits | null;
+  /** Personal token budget for the 5h block (CODEX_SESSION_TOKENS), when configured. */
+  sessionTokenLimit: number | null;
+  /** Personal turn budget for the 5h block (CODEX_SESSION_TURNS), when configured. */
+  sessionTurnLimit: number | null;
+}
+
+interface TurnRow {
+  ts: number;
+  model: string;
+  used: number;
+  inTokens: number;
+  outTokens: number;
+}export function sessionsDir(env: Record<string, string | undefined>): string {
+  const custom = env.CODEX_SESSIONS_DIR;
+  const dir = custom && custom.trim() !== "" ? custom : join(homedir(), ".codex", "sessions");
+  return dir.replace(/^~/, homedir());
+}
+
+function listSessionFiles(dir: string, now: number): string[] {
+  const all = readdirSync(dir, { recursive: true })
+    .filter((f): f is string => typeof f === "string" && f.endsWith(".jsonl"))
+    .map((f) => join(dir, f));
+  const cutoff = now - SCAN_MS;
+  return all.filter((f) => {
+    try {
+      return statSync(f).mtimeMs >= cutoff;
+    } catch {
+      return false;
+    }
+  });
+}
+
+interface TurnRow {
+  ts: number;
+  model: string;
+  used: number;
+  inTokens: number;
+  outTokens: number;
+}
+
+function collectTurns(
+  files: string[],
+  sinceMs: number,
+): { turns: TurnRow[]; duplicates: number; unparsable: number; rateLimits: CodexRateLimits | null } {
+  // Per file: walk entries in ordinal order; turn_context entries update the current model,
+  // token_usage_record entries consume it, event_msg rate_limits snapshots update the quota.
+  const turns: TurnRow[] = [];
+  let duplicates = 0;
+  let unparsable = 0;
+  let rateLimits: CodexRateLimits | null = null;
+  for (const file of files) {
+    let currentModel = "unknown";
+    const seen = new Set<string>();
+    const parsed: Array<{ ts: number; ordinal: number; entry: Record<string, unknown> }> = [];
+    for (const line of readFileSync(file, "utf-8").split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        const ts = Date.parse(String(entry.timestamp ?? ""));
+        const ordinal = Number(entry.ordinal ?? 0);
+        if (Number.isFinite(ts) && ts >= sinceMs) parsed.push({ ts, ordinal, entry });
+      } catch {
+        unparsable += 1;
+      }
+    }
+    parsed.sort((a, b) => a.ordinal - b.ordinal);
+    for (const { ts, entry } of parsed) {
+      const type = entry.type;
+      const payload = entry.payload;
+      if (type === "event_msg" && payload !== null && typeof payload === "object") {
+        const rl = (payload as Record<string, unknown>).rate_limits;
+        if (rl !== null && typeof rl === "object") {
+          const parsedRl = parseRateLimits(rl as Record<string, unknown>, ts);
+          if (parsedRl !== null && (rateLimits === null || ts > Date.parse(rateLimits.observedAt))) {
+            rateLimits = parsedRl;
+          }
+        }
+        continue;
+      }
+      if (type === "turn_context" && payload !== null && typeof payload === "object") {
+        const p = payload as Record<string, unknown>;
+        if (typeof p.model === "string" && p.model !== "") currentModel = p.model;
+        continue;
+      }
+      if (type !== "token_usage_record" || payload === null || typeof payload !== "object") continue;
+      const p = payload as Record<string, unknown>;
+      const usage = p.turn_token_usage;
+      if (usage === null || typeof usage !== "object") continue;
+      const u = usage as Record<string, unknown>;
+
+      const sessionId = typeof p.session_id === "string" ? p.session_id : "";
+      const turnId = typeof p.turn_id === "string" ? p.turn_id : "";
+      const responseId = typeof p.response_id === "string" ? p.response_id : "";
+      const key = `${sessionId}/${turnId}/${responseId}`;
+      if (seen.has(key)) {
+        duplicates += 1;
+        continue;
+      }
+      seen.add(key);
+
+      const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+      const input = n(u.input_tokens);
+      const output = n(u.output_tokens);
+      // total_tokens is Codex's own sum (input incl. cached + output); fall back if absent.
+      const total = n(u.total_tokens) || input + output;
+      turns.push({ ts, model: currentModel, used: total, inTokens: input, outTokens: output });
+    }
+  }
+  turns.sort((a, b) => a.ts - b.ts);
+  return { turns, duplicates, unparsable, rateLimits };
+}
+
+// resets_at is epoch SECONDS in the wild (e.g. 1791910105).
+function parseRateLimits(rl: Record<string, unknown>, observedTs: number): CodexRateLimits | null {
+  const win = (v: unknown): CodexRateLimitWindow | null => {
+    if (v === null || typeof v !== "object") return null;
+    const w = v as Record<string, unknown>;
+    const used = w.used_percent;
+    const minutes = w.window_minutes;
+    const resets = w.resets_at;
+    if (typeof used !== "number" || typeof minutes !== "number") return null;
+    const resetsSec = typeof resets === "number" && Number.isFinite(resets) ? resets : null;
+    return {
+      usedPercent: used,
+      windowMinutes: minutes,
+      resetsAt: resetsSec !== null ? new Date(resetsSec * 1000).toISOString() : new Date(observedTs + minutes * 60_000).toISOString(),
+    };
+  };
+  const primary = win(rl.primary);
+  const secondary = win(rl.secondary);
+  if (primary === null && secondary === null) return null;
+  return {
+    observedAt: new Date(observedTs).toISOString(),
+    planType: typeof rl.plan_type === "string" ? rl.plan_type : null,
+    primary,
+    secondary,
+  };
+}
+
+/** 5h block semantics: a turn at/after the anchor+5h opens a new block anchored there. */
+function foldBlocks(turns: TurnRow[]): CodexBlockSummary[] {
+  const blocks: CodexBlockSummary[] = [];
+  for (const t of turns) {
+    const current = blocks.at(-1);
+    if (current === undefined || t.ts >= Date.parse(current.start) + BLOCK_MS) {
+      blocks.push({
+        start: new Date(t.ts).toISOString(),
+        end: new Date(t.ts + BLOCK_MS).toISOString(),
+        used: t.used,
+        requests: 1,
+      });
+    } else {
+      current.used += t.used;
+      current.requests += 1;
+    }
+  }
+  return blocks;
+}
+
+function summarize(
+  files: string[],
+  turns: TurnRow[],
+  duplicates: number,
+  unparsable: number,
+  sessionTokenLimit: number | null,
+  sessionTurnLimit: number | null,
+  rateLimits: CodexRateLimits | null,
+): CodexSummary {
+  const daily = new Map<string, CodexDailySummary>();
+  for (const t of turns) {
+    const day = new Date(t.ts).toISOString().slice(0, 10);
+    const key = `${day}|${t.model}`;
+    const row = daily.get(key) ?? { day, model: t.model, used: 0, inTokens: 0, outTokens: 0, requests: 0 };
+    row.used += t.used;
+    row.inTokens += t.inTokens;
+    row.outTokens += t.outTokens;
+    row.requests += 1;
+    daily.set(key, row);
+  }
+  const first = turns[0];
+  const last = turns.at(-1);
+  return {
+    files: files.length,
+    turns: turns.length,
+    duplicates,
+    unparsableLines: unparsable,
+    firstTimestamp: first ? new Date(first.ts).toISOString() : null,
+    lastTimestamp: last ? new Date(last.ts).toISOString() : null,
+    blocks: foldBlocks(turns).slice(-3),
+    daily: [...daily.values()].sort((a, b) => (a.day === b.day ? (a.model < b.model ? -1 : 1) : a.day < b.day ? 1 : -1)),
+    rateLimits,
+    sessionTokenLimit,
+    sessionTurnLimit,
+  };
+}
+
+export const codexAdapter: Adapter = {
+  id: "codex",
+  stabilityTier: 3,
+  pollEveryMs: 5 * 60_000,
+
+  isConfigured(env) {
+    try {
+      return existsSync(sessionsDir(env));
+    } catch {
+      return false;
+    }
+  },
+  missingCredentials(env) {
+    return this.isConfigured(env) ? [] : ["~/.codex/sessions (run Codex once, or set CODEX_SESSIONS_DIR)"];
+  },
+
+  notes: [
+    {
+      title: "OpenAI via Codex — local transcripts, no API",
+      text: "ChatGPT-plan usage has no API (the Admin API only covers platform-org billing). This card parses the per-turn usage records Codex writes under ~/.codex/sessions, so nothing is sent anywhere and no key is needed.",
+    },
+    {
+      title: "5-hour session blocks",
+      text: "Usage metering runs in rolling 5-hour blocks anchored at your first turn after a break. Plan limits are unpublished, so the card shows absolute tokens instead of a percentage. Weekly limits aren't derivable from transcripts.",
+    },
+    {
+      title: "Scope & counting",
+      text: "Only sessions run on this machine are visible. Totals use Codex's own per-turn total (input including cached + output; reasoning tokens are part of output). Model attribution follows the session's turn_context entries; effort level lives in your Codex config, not the records.",
+    },
+    {
+      title: "How much is left? Calibrate the budgets",
+      text: "OpenAI doesn't publish ChatGPT-plan limits, so 'left' is a personal calibration: run /status inside Codex (the authoritative view), note its % against the tokens/turns here, and set CODEX_SESSION_TOKENS / CODEX_SESSION_TURNS in .env to your effective full-window budgets. Budgets are per model + effort — recalibrate when either changes.",
+    },
+  ] satisfies ProviderNote[],
+
+  async collect(ctx: CollectContext): Promise<RawPoll[]> {
+    const dir = sessionsDir(ctx.env);
+    const now = ctx.now.getTime();
+    const since = now - SCAN_MS;
+
+    let files: string[] = [];
+    if (existsSync(dir)) files = listSessionFiles(dir, now);
+    const { turns, duplicates, unparsable, rateLimits } = collectTurns(files, since);
+    const tokens = Number(ctx.env.CODEX_SESSION_TOKENS ?? "");
+    const tLimit = Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+    const turnsEnv = Number(ctx.env.CODEX_SESSION_TURNS ?? "");
+    const turnLimit = Number.isFinite(turnsEnv) && turnsEnv > 0 ? turnsEnv : null;
+    const summary = summarize(files, turns, duplicates, unparsable, tLimit, turnLimit, rateLimits);
+    const body = JSON.stringify(summary);
+    return [
+      {
+        endpoint: "sessions-jsonl",
+        url: `file://${dir}`,
+        status: 200,
+        body,
+        json: summary,
+        headers: {},
+      },
+    ];
+  },
+
+  normalize(polls, capturedAt) {
+    const poll = polls.find((p) => p.endpoint === "sessions-jsonl" && p.status === 200);
+    if (poll === undefined) throw new NormalizeError("codex: no sessions-jsonl poll");
+    const s = poll.json as CodexSummary | null;
+    if (s === null || !Array.isArray(s.daily) || !Array.isArray(s.blocks)) {
+      throw new NormalizeError("codex: unexpected summary shape");
+    }
+
+    const points: UsagePoint[] = [];
+    // OpenAI's own rate-limit telemetry is authoritative when present: real percent-used,
+    // real reset times (these also feed the dashboard's next-reset banner).
+    // Roll-forward: telemetry only arrives with requests, so a resets_at in the past means
+    // the window rolled with no usage recorded in it — the new window is 0% used, and its
+    // next reset isn't knowable until the next request.
+    const rl = s.rateLimits;
+    const windowPoint = (label: string, w: CodexRateLimitWindow) => {
+      const rolled = Date.parse(w.resetsAt) <= Date.parse(capturedAt);
+      points.push(blankPoint(capturedAt, label, "quota", "percent", {
+        used: rolled ? 0 : w.usedPercent,
+        limit: 100,
+        remaining: rolled ? 100 : Math.max(0, 100 - w.usedPercent),
+        reset_at: rolled ? null : w.resetsAt,
+        window_end: rolled ? null : w.resetsAt,
+      }));
+    };
+    if (rl?.primary !== null && rl?.primary !== undefined) windowPoint("codex-5h-percent", rl.primary);
+    if (rl?.secondary !== null && rl?.secondary !== undefined) windowPoint("codex-weekly-percent", rl.secondary);
+    const active = s.blocks.at(-1);
+    if (active !== undefined) {
+      points.push(blankPoint(capturedAt, "codex-5h", "usage", "tokens", {
+        used: active.used,
+        limit: s.sessionTokenLimit,
+        remaining: s.sessionTokenLimit !== null ? Math.max(0, s.sessionTokenLimit - active.used) : null,
+        window_start: active.start,
+        window_end: active.end,
+        reset_at: active.end,
+        requests: active.requests,
+      }));
+      if (s.sessionTurnLimit !== null && s.sessionTurnLimit > 0) {
+        points.push(blankPoint(capturedAt, "codex-5h-turns", "quota", "requests", {
+          used: active.requests,
+          limit: s.sessionTurnLimit,
+          remaining: Math.max(0, s.sessionTurnLimit - active.requests),
+          window_start: active.start,
+          window_end: active.end,
+          reset_at: active.end,
+        }));
+      }
+    }
+    for (const d of s.daily) {
+      points.push(blankPoint(capturedAt, "model-daily", "usage", "tokens", {
+        model: d.model,
+        day: d.day,
+        used: d.used,
+        tokens_in: d.inTokens,
+        tokens_out: d.outTokens,
+        requests: d.requests,
+      }));
+    }
+    if (points.length === 0) {
+      throw new NormalizeError("codex: no turn usage found in ~/.codex/sessions (last 8 days)");
+    }
+    return points;
+  },
+};
+
+function blankPoint(
+  capturedAt: string,
+  label: string,
+  kind: UsagePoint["kind"],
+  unit: UsagePoint["unit"],
+  fields: Partial<UsagePoint>,
+): UsagePoint {
+  return {
+    provider: "codex",
+    kind,
+    label,
+    model: null,
+    used: null,
+    limit: null,
+    remaining: null,
+    unit,
+    window_start: null,
+    window_end: null,
+    reset_at: null,
+    day: null,
+    requests: null,
+    tokens_in: null,
+    tokens_out: null,
+    cost_usd: null,
+    captured_at: capturedAt,
+    ...fields,
+  };
+}
