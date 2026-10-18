@@ -1,0 +1,42 @@
+# modelizer configuration — no secrets here, only env-var references (see .env.example).
+
+[server]
+port = 7788
+# bind = "127.0.0.1"   # default; do not expose without adding auth
+
+[scheduler]
+# check every 30s which adapters are due; adapters carry their own poll interval
+tick_seconds = 30
+# after repeated failures, back a provider off to at most this long
+max_backoff_seconds = 3600
+
+[providers.openrouter] # keys: OPENROUTER_API_KEY, OPENROUTER_MANAGEMENT_KEY
+enabled = true
+
+[providers.zai] # key: ZAI_API_KEY (dedicated key recommended; see README security notes)
+enabled = true
+
+# [providers.cursor]
+# enabled = true
+
+# [providers.copilot]
+# enabled = true
+
+# Claude Pro/Max — no key needed: reads Claude Code's local session logs (~/.claude/projects).
+# Optional "how much left" estimate: set CLAUDE_SESSION_TURNS in .env (see .env.example).
+[providers.claude]
+enabled = true
+
+# OpenAI via Codex (ChatGPT plan) — no key needed: reads Codex's local session logs
+# (~/.codex/sessions). Optional "how much left" budgets: CODEX_SESSION_* in .env.
+[providers.codex]
+enabled = true
+
+# [providers.kimi]       # key: MOONSHOT_API_KEY
+# enabled = true
+
+# [providers.openai]     # key: OPENAI_ADMIN_API_KEY
+# enabled = true
+
+# [providers.opencode]
+# enabled = true
