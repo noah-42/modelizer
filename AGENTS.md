@@ -6,6 +6,12 @@ Communicate in English only: chat, commits, pull requests, and code comments.
 
 Local Bun/TypeScript dashboard for LLM quotas, balances, and spend. One process polls providers on a ~15 minute cadence, normalizes into SQLite, and serves `http://127.0.0.1:7788`. It reads usage the providers already record. It does not proxy traffic.
 
+## Cross-machine coordination
+
+New here? Read `~/code/agent-hub/docs/START-HERE.md`, then run `hub who` and
+`hub inbox <your-agent-name>` before starting work. Claims and handoffs live in that repo;
+modelizer's own rules below still win for modelizer work.
+
 ## STRUCTURE
 
 ```
