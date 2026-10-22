@@ -29,7 +29,6 @@ src/subscriptions.ts  plan + price + renewal merge for the Subscriptions page
 src/adapters/         one provider per file; index.ts is display order
 web/                  Vite + React
 scripts/              mocks and the Claude StopFailure hook
-plans/                MOD plans (see plans/INDEX.md)
 ```
 
 ## WHERE TO LOOK
@@ -48,7 +47,6 @@ plans/                MOD plans (see plans/INDEX.md)
 | Schema | `src/db.ts` |
 | Dashboard | `web/src/App.tsx` |
 | Secrets | `src/secrets.ts`, `.env.example` |
-| Roadmap | `plans/INDEX.md` |
 
 ## CONVENTIONS
 
@@ -71,7 +69,6 @@ plans/                MOD plans (see plans/INDEX.md)
 - Bind `127.0.0.1`. Do not expose the server without adding auth.
 - Reset notices are off unless `MODELIZER_WEBHOOK_URL` is set. Never log the URL, the topic path, or `MODELIZER_WEBHOOK_SECRET`. Do not hardcode a topic. Host `ntfy.sh` selects ntfy format when `MODELIZER_WEBHOOK_FORMAT` is unset.
 - Tests sit next to the code (`*.test.ts`) and stay hermetic. Default test context turns live CLIs off (`CODEX_APP_SERVER=0`, `CLAUDE_USAGE=0`).
-- Plan ids come from `plans/.plan_counter` via the `/pl` helper. Do not hand-edit the counter.
 
 ## ANTI-PATTERNS
 

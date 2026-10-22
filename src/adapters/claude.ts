@@ -12,8 +12,8 @@ import type { SubscriptionFacts, SubscriptionState } from "../subscriptions";
 /**
  * Claude Pro/Max subscription (Claude Code) — stability tier 3: local files, no API.
  * Anthropic exposes no usage API for personal plans; the only machine-readable record is the
- * JSONL transcript Claude Code writes per session. Verified shape on 2026-10-06
- * (see plans/2026-10-oct-03_MOD001 provider matrix, T3 row — the ccusage data source):
+ * JSONL transcript Claude Code writes per session. Verified shape on 2026-10-06 (ccusage's
+ * data source; the original verification matrix lived in the private planning notes):
  *
  * ~/.claude/projects/<project>/<session>.jsonl — one JSON object per line. Assistant turns:
  *   { type: "assistant", timestamp: ISO, requestId, uuid, isSidechain,

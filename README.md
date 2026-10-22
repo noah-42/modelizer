@@ -268,6 +268,3 @@ the result as per-model spend ("API-equivalent"). Prices live in `src/pricing/an
 poll never depends on a third-party host. They come from models.dev — the table CodexBar uses —
 and `bun run scripts/refresh-pricing.ts` regenerates the file. Unknown models (for example the
 `<synthetic>` turns Claude Code logs for local errors) simply carry no spend row.
-
-Plans live in [`plans/`](plans/) — see [MOD001](plans/2026-10-oct-03_MOD001_llm-usage-dashboard.md)
-for the roadmap (phases: walking skeleton → regulars → occasionals → polish/deploy).
