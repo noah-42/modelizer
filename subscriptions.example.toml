@@ -47,6 +47,7 @@ plan = "supergrok"
 currency = "EUR"
 price = 15
 price_next = 30
+state = "active"
 renews_day = 14
 
 # Prepaid annual term: no monthly charge, so it is shown as a paid-through date instead.
