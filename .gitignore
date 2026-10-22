@@ -7,3 +7,4 @@ subscriptions.toml
 web/dist/
 *.log
 .DS_Store
+models.toml

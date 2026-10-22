@@ -162,6 +162,21 @@ export interface SubscriptionsResponse {
   error: string | null;
 }
 
+/** A model this machine uses and the provider that serves it. */
+export interface LlmModel {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+export interface ModelsResponse {
+  generatedAt: string;
+  path: string;
+  models: LlmModel[];
+  /** Set when models.toml could not be parsed. */
+  error: string | null;
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -183,6 +198,13 @@ export function fetchDiary(days = 14): Promise<{ days: DiaryDay[] }> {
 }
 
 /** A broken subscriptions.toml comes back as 422 *with* a readable error, so keep the body. */
+export async function fetchModels(): Promise<ModelsResponse> {
+  const res = await fetch("/api/models");
+  const body = (await res.json()) as ModelsResponse;
+  if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
+  return body;
+}
+
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
   const res = await fetch("/api/subscriptions");
   const body = (await res.json()) as SubscriptionsResponse;

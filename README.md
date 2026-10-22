@@ -49,12 +49,25 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/points?days=30` — point history
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
+- `GET /api/models` — the model → provider associations from `models.toml` (gitignored, see
+  `models.example.toml`): `{ models: [{ id, name, provider }] }`. A broken file answers 422 with
+  `error` set. Matching is case-insensitive and prefix-aware, so a versioned id finds its base
+  model; an unmatched model stays unknown rather than being attributed to a guess.
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
   `price`, `priceNext`, `currency`, `current`, `monthly`, `recurring`, `prepaid`, `counts`,
   `renewsAt`/`endsAt`, `source`, plus `totals[]` (the value of the plans active **now**, per
   currency — USD and EUR are never added together). `current` is the price in force this period
   and is what the total sums; a plan paid up front or cancelled carries `counts: false`. A
   malformed `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
+
+## Models
+
+`models.toml` (gitignored, `models.example.toml` tracked) declares which provider serves which
+model. Adapters report model strings; this file answers "whose model is that", because the same
+model can reach you through more than one provider. `src/models.ts` holds `LlmModel` and
+`ModelCatalog`: matching is case-insensitive and prefix-aware, the longest match wins, and an
+unmatched model resolves to null rather than being attributed to a guess. The dashboard lists a
+provider's declared models inside its card.
 
 ## Subscriptions
 
@@ -119,6 +132,14 @@ usage points; its card points at the Subscriptions tab.
 - **Reset notices.** When `MODELIZER_WEBHOOK_URL` is set, a passed reset (or a sharp usage drop)
   is POSTed once. The URL and `MODELIZER_WEBHOOK_SECRET` are never written to logs. The secret
   can live in the keychain under the same service (`-a MODELIZER_WEBHOOK_SECRET`).
+
+## Dashboard cards
+
+Each provider card collapses. The head keeps the provider name, its health badges and the next
+refresh of its five-hour window — the figure that decides whether you can keep working — while the
+usage bars, per-model tables and notes fold away behind it. Provider headings use display names
+(`Codex (OpenAI)`, `SpaceX (Cursor)`, `ZAI`, `Open Router`); the provider id stays the key in config,
+the API and the database, and shows in the heading's tooltip.
 
 ## Reset notices
 

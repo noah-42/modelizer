@@ -10,6 +10,13 @@ import {
   type CurrencyTotal,
   type Subscription,
 } from "./subscriptions";
+import {
+  DEFAULT_MODELS_PATH,
+  loadModels,
+  ModelCatalog,
+  ModelConfigError,
+  type LlmModel,
+} from "./models";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
 
 export interface DegradedEndpoint {
@@ -35,6 +42,16 @@ export interface OverviewProvider {
   windows: OverviewWindow[];
   /** Plan/billing row from the Subscriptions page, when one exists for this provider. */
   subscription: Subscription | null;
+}
+
+/** Model → provider associations from models.toml. */
+export interface ModelsResponse {
+  generatedAt: string;
+  /** Which file the associations came from. */
+  path: string;
+  models: LlmModel[];
+  /** Set when models.toml could not be parsed; the page shows it instead of the list. */
+  error: string | null;
 }
 
 /** One page of the Subscriptions view: merged config + provider facts. */
@@ -167,6 +184,19 @@ export function buildApi(deps: {
     const days = Math.min(Number(c.req.query("days") ?? 14) || 14, 90);
     const since = new Date(now().getTime() - days * 86_400_000).toISOString();
     return c.json({ days: buildDiary(db, since) });
+  });
+
+  app.get("/api/models", (c) => {
+    const path = env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
+    try {
+      const models = new ModelCatalog(loadModels(path)).list();
+      const body: ModelsResponse = { generatedAt: now().toISOString(), path, models, error: null };
+      return c.json(body);
+    } catch (err) {
+      const message = err instanceof ModelConfigError ? err.message : `models: ${(err as Error).message}`;
+      const broken: ModelsResponse = { generatedAt: now().toISOString(), path, models: [], error: message };
+      return c.json(broken, 422);
+    }
   });
 
   app.get("/api/subscriptions", (c) => {

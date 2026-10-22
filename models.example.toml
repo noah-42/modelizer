@@ -1,0 +1,36 @@
+# Models — which provider serves which model.
+#
+# Copy to models.toml (gitignored) and edit. This is how the app answers "whose model is that":
+# adapters report model strings, this file declares the provider that serves — and bills — it.
+# Association is declared, not inferred, because the same model can reach you through more than
+# one provider (an OpenAI model through OpenAI directly, or through a router that resells it).
+#
+# Fields
+#   id        model string exactly as an adapter reports it (check the per-model rows or the DB)
+#   name      display name; defaults to `id` when omitted
+#   provider  provider id of the card that serves it: claude, codex, cursor, zai, openrouter, …
+#
+# Matching is case-insensitive, and a reported id that starts with a configured id matches it
+# (`claude-sonnet-5-5-20260101` → `claude-sonnet-5-5`). The longest match wins, so a more specific
+# block can override a family. Anything unmatched stays unknown rather than being guessed.
+
+[[model]]
+id = "claude-opus-5-5"
+name = "Claude Opus 5.5"
+provider = "claude"
+
+[[model]]
+id = "gpt-6.1-sol"
+name = "GPT-6.1 Sol"
+provider = "codex"
+
+[[model]]
+id = "GLM-5.3"
+name = "GLM-5.3"
+provider = "zai"
+
+# The same model under a second provider: a separate block, because the association is per route.
+[[model]]
+id = "gpt-6.1-sol@openrouter"
+name = "GPT-6.1 Sol (via router)"
+provider = "openrouter"

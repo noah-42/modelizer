@@ -2,11 +2,13 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   fetchAudit,
   fetchDiary,
+  fetchModels,
   fetchOverview,
   fetchSessions,
   fetchSubscriptions,
   type AuditEventRow,
   type DiaryDay,
+  type LlmModel,
   type Overview,
   type OverviewProvider,
   type SessionInfo,
@@ -84,6 +86,7 @@ export function App() {
 
 function DashboardView() {
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [models, setModels] = useState<LlmModel[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [hidden, setHidden] = useState<string[]>(loadHidden);
@@ -99,9 +102,10 @@ function DashboardView() {
     let alive = true;
     const load = async () => {
       try {
-        const ov = await fetchOverview();
+        const [ov, cat] = await Promise.all([fetchOverview(), fetchModels()]);
         if (alive) {
           setOverview(ov);
+          setModels(cat.models);
           setError(null);
         }
       } catch (err) {
@@ -150,7 +154,7 @@ function DashboardView() {
         <div className="next-reset" title={nextReset.resetAt}>
           <span className="status-dot" />
           <span>
-            next reset: <strong>{nextReset.provider} · {friendlyLabel(nextReset.label)}</strong> in{" "}
+            next reset: <strong>{providerName(nextReset.provider)} · {friendlyLabel(nextReset.label)}</strong> in{" "}
             <strong className="countdown">{countdownLong(nextReset.resetAt, tick)}</strong> · at{" "}
             {fmtLocalClock(nextReset.resetAt)}
           </span>
@@ -161,7 +165,13 @@ function DashboardView() {
         {overview?.providers
           .filter((p) => !hidden.includes(p.id))
           .map((p) => (
-            <ProviderCard key={p.id} provider={p} tick={tick} onHide={() => toggle(p.id)} />
+            <ProviderCard
+              key={p.id}
+              provider={p}
+              models={models.filter((m) => m.provider === p.id)}
+              tick={tick}
+              onHide={() => toggle(p.id)}
+            />
           ))}
       </div>
 
@@ -318,9 +328,9 @@ function DiaryView() {
           </div>
           {day.providers.map((prov) => (
             <div key={prov.id} className="diary-provider">
-              <div className="diary-provider-name">
+              <div className="diary-provider-name" title={prov.id}>
                 <ProviderIcon id={prov.id} />
-                {prov.id}
+                {providerName(prov.id)}
               </div>
               {prov.entries.map((en, i) => (
                 <div key={`${en.label}/${en.model ?? ""}/${i}`} className="diary-entry">
@@ -417,9 +427,9 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>
+        <h2 title={s.provider}>
           <ProviderIcon id={s.provider} />
-          {s.provider}
+          {providerName(s.provider)}
         </h2>
         <div className="badges">
           <span className={`badge ${stateTone(s.state)}`}>{s.state}</span>
@@ -497,6 +507,25 @@ function chargeLine(s: Subscription, tick: number): ReactNode {
       {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
     </span>
   );
+}
+
+/**
+ * How a provider is named on the page. The id stays the key everywhere else (config, API,
+ * adapters); only the heading changes, because `codex` is OpenAI's card and `cursor` bills under
+ * the SpaceX name Noah uses for it.
+ */
+const PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  claude: "Claude (Anthropic)",
+  codex: "Codex (OpenAI)",
+  cursor: "SpaceX (Cursor)",
+  zai: "ZAI",
+  openrouter: "Open Router",
+  opencode: "OpenCode",
+  freellmapi: "freellmapi.com",
+};
+
+function providerName(id: string): string {
+  return PROVIDER_NAMES[id] ?? id;
 }
 
 /** Brand marks live in web/public/providers; an unknown provider falls back to its initial. */
@@ -628,22 +657,41 @@ function ModelTable({ rows, suffix }: { rows: ModelRow[]; suffix: string }) {
   );
 }
 
+/**
+ * One provider's card. Collapsed it shows the next refresh of its five-hour window — the figure
+ * that decides whether you can keep working — and folds the detail away.
+ */
 function ProviderCard({
   provider: p,
+  models,
   tick,
   onHide,
 }: {
   provider: OverviewProvider;
+  models: LlmModel[];
   tick: number;
   onHide: () => void;
 }) {
+  const [open, setOpen] = useState(false);
   const status = statusOf(p);
+  const fiveHour = fiveHourWindows(p);
   return (
     <section className="card">
       <div className="card-head">
         <h2>
-          <ProviderIcon id={p.id} />
-          {p.id}
+          <button
+            className="card-toggle"
+            aria-expanded={open}
+            aria-controls={`card-body-${p.id}`}
+            title={open ? "collapse" : "expand"}
+            onClick={() => setOpen((o) => !o)}
+          >
+            <span className={`chevron ${open ? "open" : ""}`} aria-hidden="true">
+              ▸
+            </span>
+            <ProviderIcon id={p.id} />
+            {providerName(p.id)}
+          </button>
         </h2>
         <div className="badges">
           <span className="badge tier" title={`polls every ${p.pollEverySeconds}s`}>
@@ -655,99 +703,135 @@ function ProviderCard({
           </button>
         </div>
       </div>
-      {p.status.map((s) => (
-        <div key={s.label} className={`status-line ${s.tone}`} title={s.until ?? undefined}>
+
+      {fiveHour.map((w) => (
+        <div key={w.label} className="window-reset" title={w.reset_at ?? undefined}>
           <span className="status-dot" />
           <span>
-            {s.label}: <strong>{s.state}</strong>
-            {s.until && <> · until {fmtLocalClock(s.until)}</>}
+            <strong>{friendlyLabel(w.label)}</strong>{" "}
+            {w.used !== null && w.unit === "percent" ? `${fmtValue(w.used, w.unit)} used · ` : ""}
+            {w.reset_at === null ? (
+              <span className="muted">refresh time unknown</span>
+            ) : (
+              <>
+                refreshes in <strong className="countdown">{countdown(w.reset_at, tick)}</strong> · at{" "}
+                {fmtLocalClock(w.reset_at)}
+              </>
+            )}
           </span>
         </div>
       ))}
-      {p.lastError && (
-        <p className="card-error" title={`at ${p.lastErrorAt ?? "?"}`}>
-          {p.lastError}
-        </p>
-      )}
-      {p.points.length === 0 ? (
-        <p className="muted">
-          {p.subscription !== null
-            ? `${p.subscription.plan} — plan only, no usage numbers; see the subscriptions tab`
-            : p.configured
-              ? "no data yet — first poll may still be running"
-              : "waiting for credentials in .env"}
-        </p>
-      ) : (
-        <div className="points">
-          {p.points
-            .filter((x) => x.day === null)
-            .map((point) => (
-              <PointRow
-                key={`${point.kind}/${point.label}/${point.model ?? ""}/${point.day ?? ""}`}
-                point={point}
-                tick={tick}
-              />
-            ))}
+
+      {open && (
+        <div id={`card-body-${p.id}`} className="card-body">
+          {p.status.map((s) => (
+            <div key={s.label} className={`status-line ${s.tone}`} title={s.until ?? undefined}>
+              <span className="status-dot" />
+              <span>
+                {s.label}: <strong>{s.state}</strong>
+                {s.until && <> · until {fmtLocalClock(s.until)}</>}
+              </span>
+            </div>
+          ))}
+          {p.lastError && (
+            <p className="card-error" title={`at ${p.lastErrorAt ?? "?"}`}>
+              {p.lastError}
+            </p>
+          )}
+          {p.points.length === 0 ? (
+            <p className="muted">
+              {p.subscription !== null
+                ? `${p.subscription.plan} — plan only, no usage numbers; see the subscriptions tab`
+                : p.configured
+                  ? "no data yet — first poll may still be running"
+                  : "waiting for credentials in .env"}
+            </p>
+          ) : (
+            <div className="points">
+              {p.points
+                .filter((x) => x.day === null)
+                .map((point) => (
+                  <PointRow
+                    key={`${point.kind}/${point.label}/${point.model ?? ""}/${point.day ?? ""}`}
+                    point={point}
+                    tick={tick}
+                  />
+                ))}
+            </div>
+          )}
+          {models.length > 0 && (
+            <p className="muted model-catalogue" title="from models.toml">
+              models · {models.map((m) => m.name).join(" · ")}
+            </p>
+          )}
+          <ModelSections provider={p} />
+          {p.notes.length > 0 && (
+            <details className="notes">
+              <summary>Pricing &amp; notes</summary>
+              {p.notes.map((n) => (
+                <p key={n.title} className="note">
+                  <strong>{n.title}.</strong> {n.text}
+                </p>
+              ))}
+            </details>
+          )}
+          <p className="muted card-foot">
+            {p.lastSuccess
+              ? `last poll ${relTime(p.lastSuccess, tick)} · next in ${nextIn(p.lastSuccess, p.pollEverySeconds, tick)}`
+              : "never polled"}
+          </p>
         </div>
       )}
-      {(() => {
-        const rows = modelRows(p.points);
-        const tokenRows = rows.filter((r) => r.label === "model-daily");
-        const spendRows = rows.filter((r) => r.label === "model-spend");
-        const spendIsEquivalent = spendRows.length > 0 && spendRows.every((r) => r.equivalent);
-        const feedFailed = p.degradedEndpoints.find(
-          (d) => d.endpoint === "model-usage" || d.endpoint === "activity",
-        );
-        const feedName = feedFailed?.endpoint === "activity" ? "spend" : "token usage";
-        if (rows.length === 0 && feedFailed === undefined) return null;
-        const degraded = feedFailed !== undefined && (
-          <span className="degraded-note" title={`${feedFailed.endpoint} endpoint failed at ${p.lastSuccess ?? "?"}`}>
-            {" "}
-            ⚠ {feedName} check failed (HTTP {feedFailed.status}) — data below may be stale
-          </span>
-        );
-        return (
-          <>
-            {tokenRows.length > 0 && (
-              <details className="notes models">
-                <summary>
-                  Per-model usage · 7 days
-                  {feedFailed?.endpoint === "model-usage" && degraded}
-                </summary>
-                <ModelTable rows={tokenRows} suffix="7d" />
-              </details>
-            )}
-            {spendRows.length > 0 && (
-              <details className="notes models">
-                <summary>
-                  {spendIsEquivalent ? "Per-model spend · API-equivalent" : "Per-model spend · 30 days"}
-                  {feedFailed?.endpoint === "activity" && degraded}
-                </summary>
-                <ModelTable rows={spendRows} suffix={spendIsEquivalent ? "recorded" : "30d"} />
-              </details>
-            )}
-            {rows.length === 0 && feedFailed !== undefined && (
-              <p className="note">No {feedName} data — the {feedFailed.endpoint} endpoint is failing.</p>
-            )}
-          </>
-        );
-      })()}
-      {p.notes.length > 0 && (
-        <details className="notes">
-          <summary>Pricing &amp; notes</summary>
-          {p.notes.map((n) => (
-            <p key={n.title} className="note">
-              <strong>{n.title}.</strong> {n.text}
-            </p>
-          ))}
+    </section>
+  );
+}
+
+/** The quota windows that reset every five hours: the ones that gate a coding session. */
+function fiveHourWindows(p: OverviewProvider): UsagePoint[] {
+  return p.points.filter((pt) => pt.day === null && pt.quota_window === "five_hour");
+}
+
+/** Per-model usage and spend, folded away behind their own summaries. */
+function ModelSections({ provider: p }: { provider: OverviewProvider }) {
+  const rows = modelRows(p.points);
+  const tokenRows = rows.filter((r) => r.label === "model-daily");
+  const spendRows = rows.filter((r) => r.label === "model-spend");
+  const spendIsEquivalent = spendRows.length > 0 && spendRows.every((r) => r.equivalent);
+  const feedFailed = p.degradedEndpoints.find(
+    (d) => d.endpoint === "model-usage" || d.endpoint === "activity",
+  );
+  const feedName = feedFailed?.endpoint === "activity" ? "spend" : "token usage";
+  if (rows.length === 0 && feedFailed === undefined) return null;
+  const degraded = feedFailed !== undefined && (
+    <span className="degraded-note" title={`${feedFailed.endpoint} endpoint failed at ${p.lastSuccess ?? "?"}`}>
+      {" "}
+      ⚠ {feedName} check failed (HTTP {feedFailed.status}) — data below may be stale
+    </span>
+  );
+  return (
+    <>
+      {tokenRows.length > 0 && (
+        <details className="notes models">
+          <summary>
+            Per-model usage · 7 days
+            {feedFailed?.endpoint === "model-usage" && degraded}
+          </summary>
+          <ModelTable rows={tokenRows} suffix="7d" />
         </details>
       )}
-      <p className="muted card-foot">
-        {p.lastSuccess
-          ? `last poll ${relTime(p.lastSuccess, tick)} · next in ${nextIn(p.lastSuccess, p.pollEverySeconds, tick)}`
-          : "never polled"}
-      </p>
-    </section>
+      {spendRows.length > 0 && (
+        <details className="notes models">
+          <summary>
+            {spendIsEquivalent ? "Per-model spend · API-equivalent" : "Per-model spend · 30 days"}
+            {feedFailed?.endpoint === "activity" && degraded}
+          </summary>
+          <ModelTable rows={spendRows} suffix={spendIsEquivalent ? "recorded" : "30d"} />
+        </details>
+      )}
+      {rows.length === 0 && feedFailed !== undefined && (
+        <p className="note">No {feedName} data — the {feedFailed.endpoint} endpoint is failing.</p>
+      )}
+    </>
   );
 }
 

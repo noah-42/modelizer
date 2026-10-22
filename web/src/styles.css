@@ -236,6 +236,41 @@ body {
   margin: 0;
   font-size: 16px;
 }
+.card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.chevron {
+  display: inline-block;
+  width: 10px;
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.chevron.open {
+  transform: rotate(90deg);
+}
+/* A five-hour refresh, kept visible above the folded detail: it decides whether you can work. */
+.window-reset {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.card-body {
+  margin-top: 10px;
+}
+.model-catalogue {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
 .provider-icon {
   width: 18px;
   height: 18px;
