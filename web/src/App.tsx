@@ -711,7 +711,11 @@ function ProviderCard({
             <strong>{friendlyLabel(w.label)}</strong>{" "}
             {w.used !== null && w.unit === "percent" ? `${fmtValue(w.used, w.unit)} used · ` : ""}
             {w.reset_at === null ? (
-              <span className="muted">refresh time unknown</span>
+              <span className="muted">
+                {windowIsIdle(w)
+                  ? "idle — nothing used, no reset to wait for"
+                  : "refresh time not reported by the provider"}
+              </span>
             ) : (
               <>
                 refreshes in <strong className="countdown">{countdown(w.reset_at, tick)}</strong> · at{" "}
@@ -789,6 +793,15 @@ function ProviderCard({
 /** The quota windows that reset every five hours: the ones that gate a coding session. */
 function fiveHourWindows(p: OverviewProvider): UsagePoint[] {
   return p.points.filter((pt) => pt.day === null && pt.quota_window === "five_hour");
+}
+
+/**
+ * A five-hour window with nothing spent in it. Providers that only send a reset time while the
+ * window is running (ZAI drops `nextResetTime` at 0%) leave us without one, and that is not a
+ * missing figure — there is nothing to wait for.
+ */
+function windowIsIdle(point: UsagePoint): boolean {
+  return point.used === 0;
 }
 
 /** Per-model usage and spend, folded away behind their own summaries. */

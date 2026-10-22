@@ -137,7 +137,9 @@ usage points; its card points at the Subscriptions tab.
 
 Each provider card collapses. The head keeps the provider name, its health badges and the next
 refresh of its five-hour window — the figure that decides whether you can keep working — while the
-usage bars, per-model tables and notes fold away behind it. Provider headings use display names
+usage bars, per-model tables and notes fold away behind it. A window with nothing spent reads
+"idle — nothing used, no reset to wait for": some providers only report a reset time while the
+window is running, and an unused window has no figure to wait on. Provider headings use display names
 (`Codex (OpenAI)`, `SpaceX (Cursor)`, `ZAI`, `Open Router`); the provider id stays the key in config,
 the API and the database, and shows in the heading's tooltip.
 

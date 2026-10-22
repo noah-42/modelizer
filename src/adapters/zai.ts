@@ -210,6 +210,9 @@ export const zaiAdapter: Adapter = {
 
         let reset_at = toIsoReset(l.nextResetTime);
         let stale = false;
+        // ZAI only sends nextResetTime while a window is in use: at 0% the field is absent (and the
+        // window is request-anchored, so there is no grid to project from). That is an idle window,
+        // not a missing figure — the page says so instead of inventing a time.
         if (reset_at !== null && totalMinutes === 300) {
           const delta = Date.parse(reset_at) - Date.parse(capturedAt);
           if (Number.isFinite(delta) && delta > 6 * 3600_000) {
