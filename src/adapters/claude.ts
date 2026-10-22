@@ -7,6 +7,7 @@ import { runCommand } from "../proc";
 import { parseUsageText, usageUnsupportedReason, windowsFromRateLimits, type HookRecord, type ParsedUsageWindow } from "../usage-text";
 import { fetchPoll, NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsagePoint } from "./types";
+import type { SubscriptionFacts, SubscriptionState } from "../subscriptions";
 
 /**
  * Claude Pro/Max subscription (Claude Code) — stability tier 3: local files, no API.
@@ -57,7 +58,9 @@ const SCAN_MS = 8 * 86_400_000;
  * would race Claude Code and CodexBar and log one of them out.
  */
 export const OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 export const OAUTH_USAGE_ENDPOINT = "oauth-usage";
+export const OAUTH_PROFILE_ENDPOINT = "oauth-profile";
 /** 401/403/429 or an unparsable body: stop calling for an hour instead of every tick. */
 export const OAUTH_BACKOFF_MS = 3_600_000;
 const OAUTH_HEADERS = { "anthropic-version": "2023-06-01", accept: "application/json" } as const;
@@ -177,6 +180,46 @@ export function parseOAuthUsage(json: unknown): OAuthUsage | null {
   }
   if (fiveHour === null && weekly === null) return null;
   return { fiveHour, weekly };
+}
+
+/** Billing states Anthropic uses on the organization; anything else stays unknown. */
+const STATE_BY_SUBSCRIPTION_STATUS: Readonly<Record<string, SubscriptionState>> = {
+  active: "active",
+  trialing: "trialing",
+  trial: "trialing",
+  canceled: "cancelled",
+  cancelled: "cancelled",
+  past_due: "past_due",
+};
+
+/**
+ * Plan facts from `/api/oauth/profile`. Anthropic states the plan and billing status but not
+ * the price or the charge date, so those come from subscriptions.toml.
+ */
+export function claudeFactsFromProfile(json: unknown): SubscriptionFacts | null {
+  const root = asRecord(json);
+  if (root === null) return null;
+  const account = asRecord(root.account);
+  const organization = asRecord(root.organization);
+  const hasMax = account?.has_claude_max === true;
+  const hasPro = account?.has_claude_pro === true;
+  const status = typeof organization?.subscription_status === "string" ? organization.subscription_status : null;
+  if (!hasMax && !hasPro && status === null) return null;
+  return {
+    provider: "claude",
+    planId: hasMax ? "max" : hasPro ? "pro" : null,
+    planName: hasMax ? "Claude Max" : hasPro ? "Claude Pro" : null,
+    state: status === null ? "unknown" : (STATE_BY_SUBSCRIPTION_STATUS[status] ?? "unknown"),
+    period: null,
+    renewsAt: null,
+    seats: null,
+    source: "claude-oauth",
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 export interface ClaudeBlockSummary {
@@ -500,6 +543,8 @@ export const claudeAdapter: Adapter = {
 
     const oauth = await readOAuthUsagePoll(ctx);
     if (oauth) polls.push(oauth);
+    const profile = await readOAuthProfilePoll(ctx);
+    if (profile) polls.push(profile);
     const statusline = readStatuslinePoll(ctx);
     if (statusline) polls.push(statusline);
     const usage = await readUsageCommand(ctx);
@@ -585,6 +630,11 @@ export const claudeAdapter: Adapter = {
       throw new NormalizeError("claude: no assistant usage found in ~/.claude/projects (last 8 days)");
     }
     return points;
+  },
+
+  subscriptionFacts(polls) {
+    const poll = polls.find((p) => p.endpoint === OAUTH_PROFILE_ENDPOINT && p.status === 200);
+    return poll === undefined ? null : claudeFactsFromProfile(poll.json);
   },
 };
 
@@ -720,20 +770,20 @@ function isoOrNull(value: string | null): string | null {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
-async function requestOAuthUsage(ctx: CollectContext, token: string): Promise<RawPoll> {
+async function requestOAuth(ctx: CollectContext, url: string, endpoint: string, token: string): Promise<RawPoll> {
   try {
     return await fetchPoll(ctx, {
-      endpoint: OAUTH_USAGE_ENDPOINT,
-      url: OAUTH_USAGE_URL,
+      endpoint,
+      url,
       headers: { ...OAUTH_HEADERS, authorization: `Bearer ${token}` },
       optional: true,
     });
   } catch (err) {
     const message = (err as Error).message;
-    ctx.log(`claude: oauth usage request failed (${message})`);
+    ctx.log(`claude: ${endpoint} request failed (${message})`);
     return {
-      endpoint: OAUTH_USAGE_ENDPOINT,
-      url: OAUTH_USAGE_URL,
+      endpoint,
+      url,
       status: 0,
       body: message,
       json: { stale: true, windows: [], error: message },
@@ -743,15 +793,10 @@ async function requestOAuthUsage(ctx: CollectContext, token: string): Promise<Ra
   }
 }
 
-/**
- * Account-wide 5h/weekly percentages from Anthropic's usage endpoint. Off unless
- * `CLAUDE_OAUTH_USAGE=1`. Never refreshes the token; failures back off for an hour.
- */
-async function readOAuthUsagePoll(ctx: CollectContext): Promise<RawPoll | null> {
+/** Shared guard: opt-in flag, backoff marker, and a live Claude Code token. */
+function oauthRequestToken(ctx: CollectContext): string | null {
   if (ctx.env.CLAUDE_OAUTH_USAGE !== "1") return null;
-  const statePath = oauthStatePath(ctx.env);
-  if (backoffActive(statePath, ctx.now)) return null;
-
+  if (backoffActive(oauthStatePath(ctx.env), ctx.now)) return null;
   const creds = readOAuthCredentials(ctx.env, { nowMs: ctx.now.getTime() });
   if (creds.token === null) {
     ctx.log("claude: CLAUDE_OAUTH_USAGE=1 but no Claude Code token; skipping account-wide usage");
@@ -761,16 +806,36 @@ async function readOAuthUsagePoll(ctx: CollectContext): Promise<RawPoll | null> 
     ctx.log("claude: Claude Code token expired; skipping account-wide usage");
     return null;
   }
+  return creds.token;
+}
 
-  const poll = await requestOAuthUsage(ctx, creds.token);
+function noteOAuthFailure(ctx: CollectContext, status: number): string {
+  const reason = status === 200 ? "unexpected-shape" : `http-${status}`;
+  rememberBackoff(ctx, oauthStatePath(ctx.env), reason, ctx.now.getTime() + OAUTH_BACKOFF_MS);
+  ctx.log(`claude: oauth ${reason}; not retrying for ${OAUTH_BACKOFF_MS / 60_000}m`);
+  return reason;
+}
+
+/**
+ * Account-wide 5h/weekly percentages from Anthropic's usage endpoint. Off unless
+ * `CLAUDE_OAUTH_USAGE=1`. Never refreshes the token; failures back off for an hour.
+ */
+async function readOAuthUsagePoll(ctx: CollectContext): Promise<RawPoll | null> {
+  const token = oauthRequestToken(ctx);
+  if (token === null) return null;
+  const poll = await requestOAuth(ctx, OAUTH_USAGE_URL, OAUTH_USAGE_ENDPOINT, token);
   const parsed = poll.status === 200 ? parseOAuthUsage(poll.json) : null;
-  if (parsed === null) {
-    const reason = poll.status === 200 ? "unexpected-shape" : `http-${poll.status}`;
-    rememberBackoff(ctx, statePath, reason, ctx.now.getTime() + OAUTH_BACKOFF_MS);
-    ctx.log(`claude: oauth usage ${reason}; not retrying for ${OAUTH_BACKOFF_MS / 60_000}m`);
-    return { ...poll, json: { stale: true, windows: [], reason } };
-  }
+  if (parsed === null) return { ...poll, json: { stale: true, windows: [], reason: noteOAuthFailure(ctx, poll.status) } };
   return { ...poll, json: { stale: false, windows: oauthWindows(parsed) } };
+}
+
+/** Plan and billing state, so the Subscriptions page can report the real plan. */
+async function readOAuthProfilePoll(ctx: CollectContext): Promise<RawPoll | null> {
+  const token = oauthRequestToken(ctx);
+  if (token === null) return null;
+  const poll = await requestOAuth(ctx, OAUTH_PROFILE_URL, OAUTH_PROFILE_ENDPOINT, token);
+  if (poll.status !== 200) noteOAuthFailure(ctx, poll.status);
+  return poll;
 }
 
 function readStatuslinePoll(ctx: CollectContext): RawPoll | null {

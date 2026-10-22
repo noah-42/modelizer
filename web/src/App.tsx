@@ -4,12 +4,15 @@ import {
   fetchDiary,
   fetchOverview,
   fetchSessions,
+  fetchSubscriptions,
   type AuditEventRow,
   type DiaryDay,
   type Overview,
   type OverviewProvider,
   type SessionInfo,
   type SessionsResponse,
+  type Subscription,
+  type SubscriptionsResponse,
   type UsagePoint,
 } from "./api";
 
@@ -55,7 +58,7 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-type Tab = "dashboard" | "audit" | "diary";
+type Tab = "dashboard" | "subscriptions" | "audit" | "diary";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -65,13 +68,14 @@ export function App() {
         <h1>modelizer</h1>
       </header>
       <nav className="tabs">
-        {(["dashboard", "audit", "diary"] as const).map((t) => (
+        {(["dashboard", "subscriptions", "audit", "diary"] as const).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
         ))}
       </nav>
       {tab === "dashboard" && <DashboardView />}
+      {tab === "subscriptions" && <SubscriptionsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
     </div>
@@ -332,6 +336,134 @@ function DiaryView() {
   );
 }
 
+function SubscriptionsView() {
+  const [data, setData] = useState<SubscriptionsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetchSubscriptions();
+        if (alive) {
+          setData(res);
+          setError(null);
+        }
+      } catch (err) {
+        if (alive) setError((err as Error).message);
+      }
+    };
+    void load();
+    const timer = setInterval(load, 60_000);
+    const ticker = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      clearInterval(ticker);
+    };
+  }, []);
+
+  const rows = data?.subscriptions ?? [];
+  return (
+    <>
+      <div className="head-line">
+        <span className="muted">
+          {data === null
+            ? "loading"
+            : `${fmtUsd(data.totalMonthlyUsd)} per month · price and charge day from ${data.configPath}`}
+        </span>
+      </div>
+      {error && <div className="banner error">Can't reach the modelizer server ({error}).</div>}
+      {data?.error && <div className="banner error">{data.error} — fix the file; no restart needed.</div>}
+      {data !== null && data.error === null && rows.length === 0 && (
+        <div className="banner">
+          No subscriptions yet — copy <code>subscriptions.example.toml</code> to <code>{data.configPath}</code> and list
+          what you pay for.
+        </div>
+      )}
+      {rows.length > 0 && data !== null && (
+        <div className="subs-summary">
+          <strong>{fmtUsd(data.totalMonthlyUsd)}</strong>
+          <span className="muted">
+            per month · {rows.length} subscription{rows.length === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
+      <div className="cards">
+        {rows.map((s) => (
+          <SubscriptionCard key={s.provider} s={s} tick={tick} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
+  const seats = s.seats !== null && s.seats > 1 ? ` · ${s.seats} seats` : "";
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>{s.provider}</h2>
+        <div className="badges">
+          <span className={`badge ${stateTone(s.state)}`}>{s.state}</span>
+        </div>
+      </div>
+      <div className="sub-plan">
+        {s.plan}
+        <span className="muted">
+          {s.period === "annual" ? " · billed yearly" : " · billed monthly"}
+          {seats}
+        </span>
+      </div>
+      <div className="sub-line">
+        <span className="muted">monthly cost</span>
+        <span>
+          {s.monthlyUsd === null ? (
+            <span className="muted">set price_usd</span>
+          ) : (
+            <strong>{fmtUsd(s.monthlyUsd)}</strong>
+          )}
+        </span>
+      </div>
+      <div className="sub-line">
+        <span className="muted">next charge</span>
+        <span>
+          {s.renewsAt === null ? (
+            <span className="muted">set renews_day</span>
+          ) : (
+            <span title={s.renewsAt}>
+              {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="sub-line">
+        <span className="muted">source</span>
+        <span className={s.configured ? "muted" : "warn-text"}>
+          {s.configured ? s.source : `${s.source} · not in subscriptions.toml`}
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function stateTone(state: Subscription["state"]): string {
+  if (state === "active") return "good";
+  if (state === "trialing") return "warn";
+  if (state === "past_due" || state === "cancelled") return "bad";
+  return "muted-badge";
+}
+
+function fmtUsd(n: number): string {
+  return fmtValue(n, "usd");
+}
+
+/** The charge day is a calendar fact, so read the instant in UTC — not the browser's offset. */
+function fmtRenewalDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { timeZone: "UTC", month: "short", day: "numeric" });
+}
+
 function diaryValue(en: { used: number | null; limit: number | null; remaining: number | null; unit: string }): string {
   if (en.unit === "percent" && en.used !== null) return `${Math.round(en.used)}%`;
   if (en.used !== null && en.limit !== null) return `${fmtValue(en.used, en.unit)} / ${fmtValue(en.limit, en.unit)}`;
@@ -442,7 +574,11 @@ function ProviderCard({
       )}
       {p.points.length === 0 ? (
         <p className="muted">
-          {p.configured ? "no data yet — first poll may still be running" : "waiting for credentials in .env"}
+          {p.subscription !== null
+            ? `${p.subscription.plan} — plan only, no usage numbers; see the subscriptions tab`
+            : p.configured
+              ? "no data yet — first poll may still be running"
+              : "waiting for credentials in .env"}
         </p>
       ) : (
         <div className="points">

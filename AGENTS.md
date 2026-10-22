@@ -25,6 +25,7 @@ src/secrets.ts        env, then macOS keychain
 src/notify.ts         optional reset webhook
 src/windows.ts        overview window shape
 src/pricing.ts        API-equivalent list prices for local usage
+src/subscriptions.ts  plan + price + renewal merge for the Subscriptions page
 src/adapters/         one provider per file; index.ts is display order
 web/                  Vite + React
 scripts/              mocks and the Claude StopFailure hook
@@ -41,6 +42,7 @@ plans/                MOD plans (see plans/INDEX.md)
 | Codex rate limits | `src/adapters/codex-app-server.ts`, `codex-limits.ts`, `codex.ts` |
 | Claude resets | `src/adapters/claude.ts`, `src/usage-text.ts`, `scripts/claude-statusline.ts`, `scripts/claude-rate-limit-hook.ts` |
 | Claude cost / list prices | `src/pricing.ts`, `src/pricing/anthropic.json`, `scripts/refresh-pricing.ts` |
+| Subscriptions page | `src/subscriptions.ts`, `src/adapters/cursor.ts`, `subscriptions.example.toml` |
 | Z.AI limits | `src/adapters/zai.ts` |
 | Reset notices / ntfy | `src/notify.ts` |
 | Schema | `src/db.ts` |
@@ -60,6 +62,7 @@ plans/                MOD plans (see plans/INDEX.md)
 - Claude windows resolve in this order: account-wide OAuth usage (only when `CLAUDE_OAUTH_USAGE=1`), statusLine snapshot, `claude -p /usage`, StopFailure hook. The OAuth call is read-only — never refresh or write the token, because Claude Code and CodexBar hold the same keychain item and a second refresher logs one of them out. 401/403/429/odd body backs off for an hour; never retry it on every tick.
 - Claude `/usage` runs with stdin closed and a 5s timeout. Any failure is stale and is not retried for 6 hours. Do not let that command hang the scheduler. It is a dead end on Claude Code 2.1.307+ (returns a `local_command` result), so do not treat its success as window data.
 - Cost is API-equivalent only: list prices from `src/pricing/anthropic.json` (refresh with `bun run scripts/refresh-pricing.ts`), never a guessed invoice. Unpriced models emit no `model-spend` row rather than a zero.
+- Subscriptions merge provider-stated facts (plan, billing state — `Adapter.subscriptionFacts`) with `subscriptions.toml` (price, `renews_day`). Facts win plan/state, config wins price/renewal; neither half is invented — an unknown plan keeps `planName` null and an unset price renders as "set price_usd". `renews_day` is a day of month (clamped), not an instant. Cursor is T2 and contributes facts only: its usage needs a cursor.com cookie session.
 - Codex windows follow length (300 minutes = 5-hour, 10080 = weekly), not the primary/secondary slot. Do not invent a reset from the window length.
 - Secrets resolve from the environment, then the macOS keychain service `modelizer`. They stay out of `modelizer.toml`, the database, logs, URLs, and API responses. `.env` is gitignored; if used, `chmod 600`.
 - Egress is the adapter's documented endpoints only, key in the `Authorization` header, TLS. Do not call undocumented OAuth usage endpoints. Do not scrape claude.ai or chatgpt.com.
@@ -73,7 +76,7 @@ plans/                MOD plans (see plans/INDEX.md)
 - Refreshing, writing, or logging the Claude OAuth token; calling the usage endpoint unless `CLAUDE_OAUTH_USAGE=1`; scraping claude.ai / chatgpt.com.
 - Putting a key, webhook URL, or topic in config, the database, logs, or the UI.
 - Hardcoding an ntfy topic name.
-- Guessing `resetsAt` from a window duration.
+- Guessing `resetsAt` from a window duration, or guessing a subscription price or charge date.
 - Sending Codex `thread/start` or `turn/start` while reading rate limits.
 - Letting `collect` throw, or letting one adapter's error fail the tick.
 - `any`, `@ts-ignore`, `@ts-expect-error`, or a non-null assertion.

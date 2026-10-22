@@ -1,3 +1,5 @@
+import type { SubscriptionFacts } from "../subscriptions";
+
 export type PointKind = "quota" | "balance" | "usage";
 export type Unit = "usd" | "cny" | "tokens" | "requests" | "credits" | "percent" | "unknown";
 
@@ -76,6 +78,12 @@ export interface Adapter {
   normalize(polls: RawPoll[], capturedAt: string): UsagePoint[];
   /** Optional clock-derived status, evaluated fresh on every overview request. */
   liveStatus?(now: Date): StatusNote[];
+  /**
+   * Optional plan/billing facts the provider states (plan id, state, seats). Pure; called by
+   * the scheduler after normalize so the Subscriptions page can show what the provider knows.
+   * Never throws past its boundary — return null when the polls do not carry the data.
+   */
+  subscriptionFacts?(polls: RawPoll[], now: Date): SubscriptionFacts | null;
   /** Optional env-derived hints (e.g. "add X key to unlock more data"), shown as muted status rows. */
   statusHints?(env: Record<string, string | undefined>): StatusNote[];
   /** Optional static pricing/token-value notes. */

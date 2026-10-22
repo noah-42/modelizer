@@ -130,6 +130,7 @@ export class Scheduler {
       this.db.insertRawPolls(id, polls, capturedAt);
       this.db.insertPoints(points);
       this.db.updateAdapterState(id, { ok: true, at: capturedAt });
+      this.recordSubscriptionFacts(id, adapter, polls, capturedAt);
 
       // ±10% jitter keeps providers from polling in lockstep bursts; a retry-after on a
       // degraded (optional-poll) run delays the next visit further.
@@ -162,9 +163,23 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Persist provider-stated plan facts (plan, state, seats). Separate from usage points because
+   * the Subscriptions page reads them whole, and a malformed shape here must not fail the poll.
+   */
+  private recordSubscriptionFacts(id: string, adapter: Adapter, polls: RawPoll[], at: string): void {
+    if (adapter.subscriptionFacts === undefined) return;
+    try {
+      const facts = adapter.subscriptionFacts(polls, new Date(at));
+      if (facts === null) return;
+      this.db.upsertSubscriptionFacts(id, facts, at);
+    } catch (err) {
+      this.log(`${id}: subscription facts failed (${(err as Error).message})`);
+    }
+  }
+
   /** Poll every adapter whose interval elapsed. Returns outcomes; never throws. */
-  async tick(): Promise<PollOutcome[]> {
-    const due = this.adapters.filter((a) => this.isDue(a.id)).map((a) => a.id);
+  async tick(): Promise<PollOutcome[]> {    const due = this.adapters.filter((a) => this.isDue(a.id)).map((a) => a.id);
     const outcomes: PollOutcome[] = [];
     for (const id of due) {
       try {

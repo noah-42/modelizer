@@ -59,6 +59,8 @@ export interface OverviewProvider {
     source: string;
     stale: boolean;
   }>;
+  /** Plan/billing row for this provider, when subscriptions.toml or the adapter has one. */
+  subscription: Subscription | null;
 }
 
 export interface Overview {
@@ -110,6 +112,31 @@ export interface DiaryDay {
   errors: number;
 }
 
+export type BillingPeriod = "monthly" | "annual";
+export type SubscriptionState = "active" | "trialing" | "cancelled" | "past_due" | "unknown";
+
+export interface Subscription {
+  provider: string;
+  plan: string;
+  priceUsd: number | null;
+  period: BillingPeriod;
+  monthlyUsd: number | null;
+  renewsAt: string | null;
+  state: SubscriptionState;
+  seats: number | null;
+  source: string;
+  configured: boolean;
+}
+
+export interface SubscriptionsResponse {
+  generatedAt: string;
+  configPath: string;
+  totalMonthlyUsd: number;
+  subscriptions: Subscription[];
+  /** Set when subscriptions.toml could not be parsed. */
+  error: string | null;
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -128,4 +155,12 @@ export function fetchAudit(session?: number): Promise<{ events: AuditEventRow[] 
 }
 export function fetchDiary(days = 14): Promise<{ days: DiaryDay[] }> {
   return getJson<{ days: DiaryDay[] }>(`/api/diary?days=${days}`);
+}
+
+/** A broken subscriptions.toml comes back as 422 *with* a readable error, so keep the body. */
+export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
+  const res = await fetch("/api/subscriptions");
+  const body = (await res.json()) as SubscriptionsResponse;
+  if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
+  return body;
 }

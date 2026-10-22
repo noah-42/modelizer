@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { RawPoll, UsagePoint } from "./adapters/types";
+import type { SubscriptionFacts } from "./subscriptions";
 
 export interface AdapterStateRow {
   provider: string;
@@ -28,6 +29,13 @@ export interface SessionRow {
 
 export type AuditLevel = "info" | "warn" | "error";
 
+/** Latest provider-stated plan facts (plan, billing state, seats) for the Subscriptions page. */
+export interface SubscriptionFactsRow {
+  provider: string;
+  facts: SubscriptionFacts;
+  observed_at: string;
+}
+
 export interface AuditEventRow {
   id: number;
   session_id: number;
@@ -50,6 +58,9 @@ export interface Db {
   pointsSince(provider: string, sinceIso: string): UsagePoint[];
   pointsAllSince(sinceIso: string): UsagePoint[];
   lastRawPolls(provider: string, limit: number): RawPollRow[];
+  /** Replace the stored plan facts for a provider; one row per provider, latest wins. */
+  upsertSubscriptionFacts(provider: string, facts: SubscriptionFacts, observedAt: string): void;
+  getSubscriptionFacts(): SubscriptionFactsRow[];
   startSession(at: string, pid: number): number;
   endSession(id: number, at: string): void;
   listSessions(limit: number): SessionRow[];
@@ -145,6 +156,12 @@ CREATE TABLE IF NOT EXISTS reset_notices (
   delivered_at TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS subscription_facts (
+  provider TEXT PRIMARY KEY,
+  facts TEXT NOT NULL,
+  observed_at TEXT NOT NULL
 );
 `;
 
@@ -358,6 +375,28 @@ export function openDb(path: string): Db {
           "SELECT endpoint, url, status, body, captured_at FROM raw_polls WHERE provider = $provider ORDER BY id DESC LIMIT $limit",
         )
         .all({ $provider: provider, $limit: limit }) as RawPollRow[];
+    },
+    upsertSubscriptionFacts(provider, facts, observedAt) {
+      db.prepare(
+        `INSERT INTO subscription_facts (provider, facts, observed_at) VALUES ($provider, $facts, $observed_at)
+         ON CONFLICT(provider) DO UPDATE SET facts = $facts, observed_at = $observed_at`,
+      ).run({ $provider: provider, $facts: JSON.stringify(facts), $observed_at: observedAt });
+    },
+    getSubscriptionFacts() {
+      const rows = db.prepare("SELECT provider, facts, observed_at FROM subscription_facts").all() as Array<{
+        provider: string;
+        facts: string;
+        observed_at: string;
+      }>;
+      const out: SubscriptionFactsRow[] = [];
+      for (const row of rows) {
+        try {
+          out.push({ provider: row.provider, facts: JSON.parse(row.facts) as SubscriptionFacts, observed_at: row.observed_at });
+        } catch {
+          // A half-written row is not worth failing the page over; the next poll rewrites it.
+        }
+      }
+      return out;
     },
     startSession(at, pid) {
       const res = db

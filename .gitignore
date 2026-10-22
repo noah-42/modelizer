@@ -3,6 +3,7 @@ data/
 .env
 .env.*
 !.env.example
+subscriptions.toml
 web/dist/
 *.log
 .DS_Store

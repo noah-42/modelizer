@@ -49,6 +49,32 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/points?days=30` — point history
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
+- `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
+  `monthlyUsd`, `renewsAt`, `source`, plus `totalMonthlyUsd`. A malformed `subscriptions.toml`
+  answers 422 with `error` set, and the page shows the message.
+
+## Subscriptions
+
+A separate page lists what you pay for: plan, billing state, monthly cost and the next charge
+date. Two sources are merged, because no provider exposes both halves:
+
+| Source | Supplies | Where it comes from |
+|---|---|---|
+| provider facts | plan, billing state, seats, billing period | Claude `/api/oauth/profile` (`CLAUDE_OAUTH_USAGE=1`), Cursor `/auth/full_stripe_profile` |
+| `subscriptions.toml` | price, renewal day | your own file (gitignored, see `subscriptions.example.toml`) |
+
+Facts win for plan and state — the provider knows. Config wins for price and renewal, because
+neither API states the charge date (Claude reports `subscription_created_at` only, Cursor nothing).
+Nothing is guessed: a plan missing from the price table shows "set price_usd", a missing charge
+day shows "set renews_day", and an unknown plan id keeps `planName` null instead of inventing a
+label. `renews_day` is a day of month (clamped in short months); `renews_at` rolls an annual date
+forward instead. xAI has no programmatic path — its API exposes credits for API keys, not the
+SuperGrok subscription — so it is config-only.
+
+Cursor's access token is read read-only from Cursor's own `state.vscdb`
+(`cursorAuth/accessToken`), sent only to `api2.cursor.sh`, and never logged or written back.
+`/api/usage-summary` needs a cursor.com cookie session, so Cursor contributes plan facts and no
+usage points; its card points at the Subscriptions tab.
 
 ## Security
 

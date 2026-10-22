@@ -1,0 +1,33 @@
+# Subscriptions — what each plan costs and when it charges.
+#
+# Copy to subscriptions.toml (gitignored) and edit. Providers with an adapter fill in the
+# plan and billing state themselves (Claude, Cursor); this file supplies the two facts no
+# provider API exposes: the price you actually pay and the day of the month it charges.
+#
+# Cost defaults to the plan's list price when the plan is recognised (Claude Pro $20,
+# Claude Max $100/$200, Cursor Pro $20 / Pro+ $60 / Ultra $200, SuperGrok $30 / Heavy $300).
+# Set price_usd when your rate differs: annual, student, team seats, grandfathered.
+#
+# renews_day = day of month (1-31, clamped in short months). renews_at = ISO date of a known
+# past charge, rolled forward instead, for annual plans.
+
+[[subscription]]
+provider = "claude"
+# plan is detected from Anthropic's profile; recorded here only to pin it
+plan = "pro"
+price_usd = 20
+renews_day = 13
+
+[[subscription]]
+provider = "cursor"
+plan = "pro"
+price_usd = 20
+renews_day = 4
+
+# No programmatic path: xAI exposes billing for API credits only, and this account's key is
+# credit-blocked. Fill in the plan you actually hold.
+[[subscription]]
+provider = "xai"
+plan = "supergrok"
+price_usd = 30
+# renews_day = 21

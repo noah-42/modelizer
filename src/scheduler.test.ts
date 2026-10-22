@@ -296,3 +296,47 @@ describe("scheduler", () => {
     db.close();
   });
 });
+
+describe("scheduler subscription facts", () => {
+  const facts = {
+    provider: "fake",
+    planId: "pro",
+    planName: "Fake Pro",
+    state: "active" as const,
+    period: null,
+    renewsAt: null,
+    seats: null,
+    source: "fake-api",
+  };
+
+  test("stores the plan facts an adapter reports alongside the usage points", async () => {
+    const h = harness([fakeAdapter({ subscriptionFacts: () => facts })]);
+    const outcome = await h.scheduler.runProvider("fake");
+    expect(outcome.ok).toBe(true);
+    expect(h.db.getSubscriptionFacts()).toEqual([
+      { provider: "fake", facts, observed_at: "2026-10-03T00:00:00.000Z" },
+    ]);
+    h.db.close();
+  });
+
+  test("leaves a provider without a facts method untouched", async () => {
+    const h = harness([fakeAdapter()]);
+    await h.scheduler.runProvider("fake");
+    expect(h.db.getSubscriptionFacts()).toEqual([]);
+    h.db.close();
+  });
+
+  test("never fails the poll when the facts parser throws", async () => {
+    const h = harness([
+      fakeAdapter({
+        subscriptionFacts: () => {
+          throw new Error("unexpected profile shape");
+        },
+      }),
+    ]);
+    const outcome = await h.scheduler.runProvider("fake");
+    expect(outcome.ok).toBe(true);
+    expect(h.db.getSubscriptionFacts()).toEqual([]);
+    h.db.close();
+  });
+});

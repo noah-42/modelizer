@@ -473,3 +473,32 @@ code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+.subs-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.subs-summary strong {
+  font-variant-numeric: tabular-nums;
+}
+.sub-plan {
+  margin: 2px 0 10px;
+  font-size: 13px;
+}
+.sub-line {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  margin-top: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.sub-line > span:last-child {
+  text-align: right;
+}
+.warn-text {
+  color: var(--warn);
+}

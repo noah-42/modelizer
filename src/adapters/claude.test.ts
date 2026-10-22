@@ -2,7 +2,16 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeAdapter, oauthStatusHint, OAUTH_BACKOFF_MS, parseOAuthUsage, readOAuthCredentials, USAGE_UNSUPPORTED_BACKOFF_MS, type ClaudeSummary } from "./claude";
+import {
+  claudeAdapter,
+  claudeFactsFromProfile,
+  oauthStatusHint,
+  OAUTH_BACKOFF_MS,
+  parseOAuthUsage,
+  readOAuthCredentials,
+  USAGE_UNSUPPORTED_BACKOFF_MS,
+  type ClaudeSummary,
+} from "./claude";
 import type { CollectContext, RawPoll } from "./types";
 
 // Timestamps are pinned around a fixed "now" so the 8-day scan window is deterministic.
@@ -705,5 +714,64 @@ describe("claude API-equivalent cost", () => {
       used: null,
       source: "pricing",
     });
+  });
+});
+
+describe("claudeFactsFromProfile", () => {
+  const profile = {
+    account: { has_claude_pro: true, has_claude_max: false },
+    organization: {
+      organization_type: "claude_pro",
+      billing_type: "stripe_subscription",
+      subscription_status: "active",
+      subscription_created_at: "2026-01-13T12:52:06.966851Z",
+    },
+  };
+
+  test("reports the plan and billing state Anthropic states", () => {
+    expect(claudeFactsFromProfile(profile)).toEqual({
+      provider: "claude",
+      planId: "pro",
+      planName: "Claude Pro",
+      state: "active",
+      period: null,
+      renewsAt: null,
+      seats: null,
+      source: "claude-oauth",
+    });
+  });
+
+  test("reports a Max plan as max", () => {
+    const max = { ...profile, account: { has_claude_pro: false, has_claude_max: true } };
+    expect(claudeFactsFromProfile(max)).toMatchObject({ planId: "max", planName: "Claude Max" });
+  });
+
+  test("maps a cancelled subscription to cancelled", () => {
+    const cancelled = { ...profile, organization: { ...profile.organization, subscription_status: "canceled" } };
+    expect(claudeFactsFromProfile(cancelled)).toMatchObject({ state: "cancelled" });
+  });
+
+  test("keeps an unrecognised billing status as unknown rather than guessing", () => {
+    const odd = { ...profile, organization: { ...profile.organization, subscription_status: "paused" } };
+    expect(claudeFactsFromProfile(odd)).toMatchObject({ state: "unknown" });
+  });
+
+  test("returns null when the body carries no plan at all", () => {
+    expect(claudeFactsFromProfile({})).toBeNull();
+    expect(claudeFactsFromProfile(null)).toBeNull();
+    expect(claudeFactsFromProfile("nope")).toBeNull();
+  });
+
+  test("the adapter reads facts from the archived profile poll", () => {
+    const poll: RawPoll = {
+      endpoint: "oauth-profile",
+      url: "https://api.anthropic.com/api/oauth/profile",
+      status: 200,
+      body: JSON.stringify(profile),
+      json: profile,
+      headers: {},
+    };
+    expect(claudeAdapter.subscriptionFacts?.([poll], NOW)).toMatchObject({ planId: "pro", state: "active" });
+    expect(claudeAdapter.subscriptionFacts?.([{ ...poll, status: 401 }], NOW)).toBeNull();
   });
 });

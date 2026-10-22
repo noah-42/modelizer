@@ -2,6 +2,13 @@ import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import type { Adapter, ProviderNote, StatusNote, UsagePoint } from "./adapters/types";
 import type { AuditEventRow, Db, SessionRow } from "./db";
+import {
+  DEFAULT_SUBSCRIPTIONS_PATH,
+  loadSubscriptions,
+  SubscriptionCatalog,
+  SubscriptionConfigError,
+  type Subscription,
+} from "./subscriptions";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
 
 export interface DegradedEndpoint {
@@ -25,6 +32,19 @@ export interface OverviewProvider {
   points: UsagePoint[];
   /** Authoritative quota windows (5h, weekly, …) for an outside assistant. */
   windows: OverviewWindow[];
+  /** Plan/billing row from the Subscriptions page, when one exists for this provider. */
+  subscription: Subscription | null;
+}
+
+/** One page of the Subscriptions view: merged config + provider facts. */
+export interface SubscriptionsResponse {
+  generatedAt: string;
+  /** Which file the price/renewal half came from. */
+  configPath: string;
+  totalMonthlyUsd: number;
+  subscriptions: Subscription[];
+  /** Set when subscriptions.toml could not be parsed; the page shows it instead of rows. */
+  error: string | null;
 }
 
 export interface DiaryEntry {
@@ -68,6 +88,7 @@ export function buildApi(deps: {
   app.get("/api/overview", (c) => {
     const states = new Map(db.getAllAdapterStates().map((s) => [s.provider, s]));
     const latest = db.latestPoints();
+    const planRows = new Map(readSubscriptions(db, env, now()).rows.map((r) => [r.provider, r]));
     const providers: OverviewProvider[] = adapters.map((a) => {
       const state = states.get(a.id);
       const pollEveryMs = a.pollEveryMs;
@@ -103,6 +124,7 @@ export function buildApi(deps: {
         windows: windowsFromPoints(latest.filter((p) => p.provider === a.id)).map(
           ({ provider: _provider, ...window }) => window,
         ),
+        subscription: planRows.get(a.id) ?? null,
       };
     });
     return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);
@@ -142,18 +164,65 @@ export function buildApi(deps: {
     return c.json({ days: buildDiary(db, since) });
   });
 
+  app.get("/api/subscriptions", (c) => {
+    const view = readSubscriptions(db, env, now());
+    const generatedAt = now().toISOString();
+    if (view.error !== null) {
+      const broken: SubscriptionsResponse = {
+        generatedAt,
+        configPath: view.configPath,
+        totalMonthlyUsd: view.totalMonthlyUsd,
+        subscriptions: [],
+        error: view.error,
+      };
+      return c.json(broken, 422);
+    }
+    const body: SubscriptionsResponse = {
+      generatedAt,
+      configPath: view.configPath,
+      totalMonthlyUsd: view.totalMonthlyUsd,
+      subscriptions: view.rows,
+      error: null,
+    };
+    return c.json(body);
+  });
+
   app.use("*", serveStatic({ root: "./web/dist" }));
   app.get("*", serveStatic({ path: "./web/dist/index.html" }));
 
   return app;
 }
 
+interface SubscriptionView {
+  rows: Subscription[];
+  totalMonthlyUsd: number;
+  configPath: string;
+  error: string | null;
+}
+
+/**
+ * Merge subscriptions.toml (price, renewal day) with the last plan facts each adapter stored
+ * (plan, billing state). Never throws: a broken config becomes a message on the page.
+ */
+function readSubscriptions(db: Db, env: Record<string, string | undefined>, at: Date): SubscriptionView {
+  const override = env.MODELIZER_SUBSCRIPTIONS?.trim();
+  const configPath = override !== undefined && override !== "" ? override : DEFAULT_SUBSCRIPTIONS_PATH;
+  try {
+    const entries = loadSubscriptions(configPath);
+    const facts = db.getSubscriptionFacts().map((row) => row.facts);
+    const catalog = new SubscriptionCatalog(entries, facts, at);
+    return { rows: catalog.list(), totalMonthlyUsd: catalog.totalMonthlyUsd(), configPath, error: null };
+  } catch (err) {
+    const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
+    return { rows: [], totalMonthlyUsd: 0, configPath, error: message };
+  }
+}
+
 /**
  * Day-by-day usage journal. model-daily points are filed under their usage day (immutable
  * history); every other point under the local date it was captured, keeping the last
  * capture of the day per (provider, kind, label, model) — the day's closing value.
- */
-function buildDiary(db: Db, sinceIso: string): DiaryDay[] {
+ */function buildDiary(db: Db, sinceIso: string): DiaryDay[] {
   const points = db.pointsAllSince(sinceIso);
   const events = db.auditEvents({ limit: 4000 });
 
