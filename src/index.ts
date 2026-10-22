@@ -39,11 +39,18 @@ const scheduler = new Scheduler({
 const stopTimer = scheduler.start(config.scheduler.tickSeconds * 1000);
 void scheduler.tick().catch((err) => console.error(`initial tick failed: ${(err as Error).message}`));
 
-const app = buildApi({ db, adapters: enabled, env, currentSessionId: sessionId });
+const app = buildApi({
+  db,
+  adapters: enabled,
+  env,
+  currentSessionId: sessionId,
+  token: config.server.token,
+});
 const server = Bun.serve({
   port: config.server.port,
   hostname: config.server.bind,
-  fetch: app.fetch,
+  // The peer address decides whether a request is local (trusted) or must present the token.
+  fetch: (request, server) => app.fetch(request, { ip: server.requestIP(request) }),
 });
 log(`modelizer session #${sessionId}: ${enabled.map((a) => a.id).join(", ")} → http://${config.server.bind}:${server.port} (db: ${dbPath})`);
 

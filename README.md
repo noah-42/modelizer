@@ -12,13 +12,18 @@ modelizer only reads the usage each provider already records.
 
 ```sh
 bun install
-cp .env.example .env        # add the keys you have; every provider is optional
+cp .env.example .env                  # add the keys you have; every provider is optional
+cp modelizer.example.toml modelizer.toml   # pick your providers; defaults are sane
+cp subscriptions.example.toml subscriptions.toml   # what you pay (optional)
+cp models.example.toml models.toml    # which models belong to which provider (optional)
 bun run web:build           # once (or skip and use `bun run web:dev` for UI work)
 bun run dev                 # → http://127.0.0.1:7788
 ```
 
-Enable the providers you use in `modelizer.toml` (`[providers.openrouter] enabled = true`, …).
-Secrets live only in `.env` (or your shell) — never in the config file or the database.
+Secrets live only in `.env` (or the keychain) — never in a config file, the database or git.
+Everything you personalise is gitignored and has an `*.example.toml` committed next to it:
+`.env` / `modelizer.toml` / `subscriptions.toml` / `models.toml`. That split is the line between
+the software and your data — a fresh clone plus four copies is a working install.
 
 ## Commands
 
@@ -41,6 +46,9 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 
 ## Status API
 
+Full reference for other services lives in [API.md](API.md) — endpoints, token auth, payload
+shapes. Summary:
+
 - `GET /api/overview` — one object per provider: state (last poll, errors, staleness) + latest points.
   Each provider also has `windows[]`: `{ window, usedPercent, resetsAt, source, stale }` for the
   authoritative quota windows (`five_hour`, `weekly`, and Z.AI's `monthly` / `mcp`). `source` is
@@ -50,9 +58,11 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
 - `GET /api/models` — the model → provider associations from `models.toml` (gitignored, see
-  `models.example.toml`): `{ models: [{ id, name, provider }] }`. A broken file answers 422 with
-  `error` set. Matching is case-insensitive and prefix-aware, so a versioned id finds its base
-  model; an unmatched model stays unknown rather than being attributed to a guess.
+  `models.example.toml`), with context and per-million pricing where known. A broken file answers
+  422 with `error` set. Matching is case-insensitive and prefix-aware, so a versioned id finds its
+  base model; an unmatched model stays unknown rather than being attributed to a guess.
+- `POST /api/models` — add an entry from an OpenRouter link (`{url, provider?}`); the server reads
+  the metadata from OpenRouter and appends the block. See API.md for the error codes.
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
   `price`, `priceNext`, `currency`, `current`, `monthly`, `recurring`, `prepaid`, `counts`,
   `renewsAt`/`endsAt`, `source`, plus `totals[]` (the value of the plans active **now**, per
@@ -125,8 +135,11 @@ usage points; its card points at the Subscriptions tab.
 - **Minimal egress.** Each adapter GETs only its documented endpoints with the key in the
   `Authorization` header over TLS. Keys never appear in URLs, logs, the database, or API
   responses (`raw_polls` archives response bodies only — providers never echo your key back).
-- **Localhost only.** The dashboard binds `127.0.0.1` by default. Do not expose it without
-  adding auth — the data itself (quotas, spend) is sensitive.
+- **Localhost only, token for the rest.** The dashboard binds `127.0.0.1` by default, and the
+  data itself (quotas, spend) is sensitive. To let other machines read the API, set `[server]
+  token` in `modelizer.toml` (or `MODELIZER_TOKEN`): local callers stay trusted, anything from
+  further away must present the token as `Authorization: Bearer …` or `?token=…`. The token has
+  no scopes — it reads and writes — so treat it like a key and keep the bind narrow.
 - **Gentle polling.** 15-minute default cadence with exponential backoff and `retry-after`
   honoring; the failure state of one provider never affects another.
 - **Reset notices.** When `MODELIZER_WEBHOOK_URL` is set, a passed reset (or a sharp usage drop)

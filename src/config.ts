@@ -6,13 +6,13 @@ export interface ProviderConfig {
 }
 
 export interface Config {
-  server: { port: number; bind: string };
+  server: { port: number; bind: string; token?: string | undefined };
   scheduler: { tickSeconds: number; maxBackoffSeconds: number };
   providers: Record<string, ProviderConfig>;
 }
 
 interface RawConfig {
-  server?: { port?: number; bind?: string };
+  server?: { port?: number; bind?: string; token?: string };
   scheduler?: { tick_seconds?: number; max_backoff_seconds?: number };
   providers?: Record<string, { enabled?: boolean }>;
 }
@@ -41,6 +41,7 @@ export function loadConfig(path = "modelizer.toml"): Config {
     server: {
       port: raw.server?.port ?? DEFAULT_CONFIG.server.port,
       bind: raw.server?.bind ?? DEFAULT_CONFIG.server.bind,
+      token: raw.server?.token?.trim() || undefined,
     },
     scheduler: {
       tickSeconds: raw.scheduler?.tick_seconds ?? DEFAULT_CONFIG.scheduler.tickSeconds,

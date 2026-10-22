@@ -4,6 +4,7 @@ data/
 .env.*
 !.env.example
 subscriptions.toml
+modelizer.toml
 web/dist/
 *.log
 .DS_Store

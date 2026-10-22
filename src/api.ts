@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import type { Adapter, ProviderNote, StatusNote, UsagePoint } from "./adapters/types";
@@ -110,6 +111,13 @@ export interface Overview {
   providers: OverviewProvider[];
 }
 
+/** Compare in constant time, via a hash so differing lengths cannot leak timing. */
+function hashesEqual(given: string, expected: string): boolean {
+  const a = createHash("sha256").update(given).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return a.equals(b);
+}
+
 export function buildApi(deps: {
   db: Db;
   adapters: Adapter[];
@@ -118,12 +126,29 @@ export function buildApi(deps: {
   currentSessionId?: number;
   /** Injected so tests can answer the OpenRouter catalogue without leaving the process. */
   fetchFn?: typeof fetch;
+  /** Shared secret for requests that do not come from this machine; absent means the API is open. */
+  token?: string | undefined;
 }): Hono {
   const { db, adapters, env } = deps;
   const now = deps.now ?? (() => new Date());
   const fetchFn = deps.fetchFn ?? fetch;
   const app = new Hono();
   const modelsPath = () => env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
+  const expectedToken = deps.token ?? env.MODELIZER_TOKEN?.trim() ?? "";
+
+  /**
+   * Local callers — the dashboard in a browser, scripts on this machine — are trusted. Everything
+   * from further away must present the token, as `Authorization: Bearer …` or `?token=…`.
+   */
+  app.use("/api/*", async (c, next) => {
+    if (expectedToken === "") return next();
+    const address = (c.env as { ip?: { address?: string } | null } | undefined)?.ip?.address ?? "";
+    if (address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1") return next();
+    const header = c.req.header("authorization") ?? "";
+    const given = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : c.req.query("token") ?? "";
+    if (given !== "" && hashesEqual(given, expectedToken)) return next();
+    return c.json({ error: "unauthorized — pass the token as `Authorization: Bearer …` or `?token=…`" }, 401);
+  });
 
   app.get("/api/overview", (c) => {
     const states = new Map(db.getAllAdapterStates().map((s) => [s.provider, s]));

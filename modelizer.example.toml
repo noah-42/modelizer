@@ -1,0 +1,49 @@
+# modelizer configuration — no secrets here, only env-var references (see .env.example).
+#
+# Copy to modelizer.toml and edit. This file is machine-specific and gitignored, like
+# subscriptions.toml and models.toml: the software ships with the `*.example.toml` files,
+# and everything you actually run lives outside git.
+
+[server]
+port = 7788
+# bind = "127.0.0.1"   # default; do not expose without setting a token
+# token = ""           # shared secret for callers that are not this machine. When set, requests
+#                      # not originating from 127.0.0.1 must pass it as `Authorization: Bearer …`
+#                      # or `?token=…`. MODELIZER_TOKEN in the environment overrides this field.
+
+[scheduler]
+# check every 30s which adapters are due; adapters carry their own poll interval
+tick_seconds = 30
+# after repeated failures, back a provider off to at most this long
+max_backoff_seconds = 3600
+
+[providers.openrouter] # keys: OPENROUTER_API_KEY, OPENROUTER_MANAGEMENT_KEY
+enabled = true
+
+[providers.zai] # key: ZAI_API_KEY (dedicated key recommended; see README security notes)
+enabled = true
+
+# Cursor Pro — plan, billing state and the weekly included-usage window from Cursor's own API.
+# The access token is read read-only from Cursor's local state.vscdb (key cursorAuth/accessToken).
+[providers.cursor]
+enabled = true
+
+# [providers.copilot]
+# enabled = true
+
+# Claude Pro/Max — transcripts under ~/.claude/projects. Quota windows: statusLine
+# script (scripts/claude-statusline.ts), then `claude -p /usage --output-format json`,
+# then the StopFailure hook (scripts/claude-rate-limit-hook.ts).
+[providers.claude]
+enabled = true
+
+# OpenAI via Codex (ChatGPT plan) — `codex app-server` rate limits, session logs as fallback.
+# Optional token budgets: CODEX_SESSION_* in .env. CODEX_APP_SERVER=0 skips the live read.
+[providers.codex]
+enabled = true
+
+# [providers.kimi]       # key: MOONSHOT_API_KEY
+# enabled = true
+
+# [providers.openai]     # key: OPENAI_ADMIN_API_KEY
+# enabled = true
