@@ -6,6 +6,7 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from 
 
 /** Default data file created by the official Docker install when its volume is mounted locally. */
 export const DEFAULT_FREELLMAPI_DB = join(homedir(), "freellmapi", "server", "data", "freeapi.db");
+export const DEFAULT_FREELLMAPI_CONTAINER = "freellmapi-freellmapi-1";
 export const FREELLMAPI_POLL_MS = 5 * 60_000;
 const PROVIDER_ID = "freellmapi";
 const DAILY_LABEL = "freellmapi-daily-usage";
@@ -43,11 +44,13 @@ export const freellmapiAdapter: Adapter = {
   pollEveryMs: FREELLMAPI_POLL_MS,
 
   isConfigured(env) {
-    return existsSync(databasePath(env));
+    return existsSync(databasePath(env)) || dockerContainerExists(env);
   },
 
   missingCredentials(env) {
-    return existsSync(databasePath(env)) ? [] : [`FreeLLMAPI database not found: ${databasePath(env)}`];
+    return existsSync(databasePath(env)) || dockerContainerExists(env)
+      ? []
+      : [`FreeLLMAPI database/container not found: ${databasePath(env)}`];
   },
 
   notes: [
@@ -63,18 +66,18 @@ export const freellmapiAdapter: Adapter = {
 
   async collect(ctx: CollectContext) {
     const path = databasePath(ctx.env);
-    if (!existsSync(path)) return [missingDatabasePoll(path)];
     try {
-      return [readSnapshot(path, ctx.now)];
+      if (existsSync(path)) return [readSnapshot(path, ctx.now)];
+      return [await readContainerSnapshot(ctx.env, ctx.now)];
     } catch (error) {
       const message = (error as Error).message;
       ctx.log(`freellmapi: database read failed (${message})`);
-      return [{ endpoint: "local-db", url: `file://${path}`, status: 0, body: message, json: null, headers: {}, optional: true }];
+      return [{ endpoint: "local-db", url: sourceUrl(ctx.env), status: 0, body: message, json: null, headers: {}, optional: true }];
     }
   },
 
   normalize(polls, capturedAt) {
-    const poll = polls.find((candidate) => candidate.endpoint === "local-db" && candidate.status === 200);
+    const poll = polls.find((candidate) => (candidate.endpoint === "local-db" || candidate.endpoint === "container-db") && candidate.status === 200);
     if (poll === undefined || poll.json === null) return [];
     return normalizeSnapshot(poll.json as FreeLlmApiSnapshot, capturedAt);
   },
@@ -83,6 +86,29 @@ export const freellmapiAdapter: Adapter = {
 /** Resolve the configurable SQLite path without making a user copy the database. */
 export function databasePath(env: Record<string, string | undefined>): string {
   return env.FREELLMAPI_DB?.trim() || DEFAULT_FREELLMAPI_DB;
+}
+
+function sourceUrl(env: Record<string, string | undefined>): string {
+  return existsSync(databasePath(env)) ? `file://${databasePath(env)}` : `docker://${dockerContainerName(env)}/app/server/data/freeapi.db`;
+}
+
+function dockerContainerName(env: Record<string, string | undefined>): string {
+  return env.FREELLMAPI_CONTAINER?.trim() || DEFAULT_FREELLMAPI_CONTAINER;
+}
+
+function dockerContainerExists(env: Record<string, string | undefined>): boolean {
+  const result = Bun.spawnSync(["docker", "inspect", dockerContainerName(env)], { stdout: "ignore", stderr: "ignore" });
+  return result.exitCode === 0;
+}
+
+async function readContainerSnapshot(env: Record<string, string | undefined>, capturedAt: Date): Promise<RawPoll> {
+  const query = `const Database=require('better-sqlite3');const d=new Database('/app/server/data/freeapi.db',{readonly:true});const models=d.prepare("SELECT platform,model_id,display_name,rpd_limit,tpd_limit,rpm_limit,tpm_limit FROM models WHERE enabled=1 ORDER BY platform,model_id LIMIT ${MAX_MODEL_ROWS}").all();const usage=d.prepare("SELECT platform,model_id,substr(created_at,1,10) AS day,count(*) AS requests,coalesce(sum(max(input_tokens,0)),0) AS tokens_in,coalesce(sum(max(output_tokens,0)),0) AS tokens_out FROM requests WHERE status='success' GROUP BY platform,model_id,substr(created_at,1,10) ORDER BY day DESC,requests DESC LIMIT ${MAX_MODEL_ROWS}").all();console.log(JSON.stringify({captured_at:new Date().toISOString(),models,usage}));`;
+  const process = Bun.spawn(["docker", "exec", dockerContainerName(env), "node", "-e", query], { stdout: "pipe", stderr: "pipe" });
+  const [body, error] = await Promise.all([process.stdout.text(), process.stderr.text()]);
+  const exitCode = await process.exited;
+  if (exitCode !== 0) throw new Error(error.trim() || `docker exec exited ${exitCode}`);
+  const snapshot = JSON.parse(body.trim()) as FreeLlmApiSnapshot;
+  return { endpoint: "container-db", url: sourceUrl(env), status: 200, body: JSON.stringify(snapshot), json: snapshot, headers: {} };
 }
 
 function missingDatabasePoll(path: string): RawPoll {
