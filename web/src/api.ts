@@ -128,13 +128,19 @@ export interface Subscription {
   priceNext: number | null;
   currency: string;
   period: BillingPeriod;
-  /** Recurring monthly cost in `currency` (priceNext ?? price, annualised). */
+  /** Monthly cost in force now, in `currency` (price, annualised). Drives the header total. */
+  current: number | null;
+  /** Monthly cost from the next charge on (priceNext ?? price, annualised). */
   monthly: number | null;
   renewsAt: string | null;
   /** Paid-through date of a prepaid term; null when it renews instead. */
   endsAt: string | null;
-  /** True when the plan keeps charging, so it counts toward the monthly total. */
+  /** True when the plan charges again after this period. */
   recurring: boolean;
+  /** True when the whole term was paid up front, so the money has already left. */
+  prepaid: boolean;
+  /** True when the plan is live and costing money now, so it is in the header total. */
+  counts: boolean;
   state: SubscriptionState;
   seats: number | null;
   source: string;

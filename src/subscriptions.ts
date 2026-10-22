@@ -72,17 +72,20 @@ export interface Subscription {
   priceNext: number | null;
   currency: string;
   period: BillingPeriod;
-  /** Recurring monthly cost in `currency` (priceNext ?? price, annualised). Drives the total. */
+  /** Monthly cost in force now, in `currency` (price, annualised). Drives the total. */
+  current: number | null;
+  /** Monthly cost from the next charge on (priceNext ?? price, annualised). */ 
   monthly: number | null;
   /** Next automatic charge, when the plan renews. */
   renewsAt: string | null;
   /** Paid-through date for a prepaid term; null when it renews instead. */
   endsAt: string | null;
-  /**
-   * True when the plan keeps charging, so it belongs in the monthly total. A plan that will not
-   * renew does not: an annual term paid up front, or a subscription cancelled mid-term.
-   */
+  /** True when the plan charges again after this period. */
   recurring: boolean;
+  /** True when the whole term was paid up front: the money has already left. */
+  prepaid: boolean;
+  /** True when the plan is live and costing money now, so it belongs in the monthly total. */
+  counts: boolean;
   state: SubscriptionState;
   seats: number | null;
   /** `config`, the provider source, or `<source>+config`. */
@@ -314,11 +317,12 @@ export class SubscriptionCatalog {
   }
 
   /**
-   * Monthly spend per currency for plans that keep charging — what actually leaves the account
-   * every month. A plan that will not renew is left out; its row carries `recurring: false`.
+   * Value of the plans that are active right now, per currency, at the price in force this
+   * period. A plan paid up front is out (that money is spent, not monthly), as are cancelled and
+   * past-due plans; a plan that is still running counts even if it will not renew.
    */
   totals(): CurrencyTotal[] {
-    return sumByCurrency(this.list().filter((s) => s.recurring));
+    return sumByCurrency(this.list().filter((s) => s.counts), (s) => s.current);
   }
 
   private merge(provider: string): Subscription {
@@ -342,6 +346,9 @@ export class SubscriptionCatalog {
       ) ?? facts?.renewsAt ?? null;
     // A plan set not to renew ends, it does not charge: show its last day instead of a renewal.
     const endsAt = entry?.endsAt === undefined ? null : entry.endsAt;
+    // A year paid in one go is a spent cost, not a monthly one; a cancelled plan costs nothing.
+    const prepaid = endsAt !== null && period === "annual";
+    const live = state !== "cancelled" && state !== "past_due";
 
     return {
       provider,
@@ -350,10 +357,13 @@ export class SubscriptionCatalog {
       priceNext,
       currency,
       period,
+      current: monthlyPrice(price, period),
       monthly: monthlyPrice(priceNext ?? price, period),
       renewsAt: endsAt === null ? renewsAt : null,
       endsAt,
       recurring: endsAt === null,
+      prepaid,
+      counts: live && !prepaid,
       state,
       seats: entry?.seats ?? facts?.seats ?? null,
       source: sourceLabel(entry !== undefined, facts?.source),
@@ -368,11 +378,15 @@ function sourceLabel(configured: boolean, factSource: string | undefined): strin
 }
 
 /** Currencies are never added together: one figure per currency, unpriced rows skipped. */
-function sumByCurrency(rows: readonly Subscription[]): CurrencyTotal[] {
+function sumByCurrency(
+  rows: readonly Subscription[],
+  amount: (row: Subscription) => number | null,
+): CurrencyTotal[] {
   const byCurrency = new Map<string, number>();
   for (const row of rows) {
-    if (row.monthly === null) continue;
-    byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0) + row.monthly);
+    const value = amount(row);
+    if (value === null) continue;
+    byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0) + value);
   }
   return [...byCurrency.entries()]
     .map(([currency, monthly]) => ({ currency, monthly: Number(monthly.toFixed(2)) }))

@@ -50,10 +50,11 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
-  `price`, `priceNext`, `currency`, `monthly`, `recurring`, `renewsAt`/`endsAt`, `source`, plus
-  `totals[]` (recurring monthly spend **per currency** — USD and EUR are never added together).
-  A plan that will not renew is out of `totals[]` and carries `recurring: false`. A malformed
-  `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
+  `price`, `priceNext`, `currency`, `current`, `monthly`, `recurring`, `prepaid`, `counts`,
+  `renewsAt`/`endsAt`, `source`, plus `totals[]` (the value of the plans active **now**, per
+  currency — USD and EUR are never added together). `current` is the price in force this period
+  and is what the total sums; a plan paid up front or cancelled carries `counts: false`. A
+  malformed `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
 
 ## Subscriptions
 
@@ -77,8 +78,12 @@ intro rate (charged 15 now, 30 from the next renewal): the row shows both, the t
 recurring amount. `renews_day` is a day of month (clamped in short months), `renews_at` rolls an
 annual charge forward, and `ends_at` marks a plan that will not renew — an annual term paid up
 front, or a subscription with auto-renew switched off. Such a plan shows its last day ("ends Nov
-12 · in 20d · won't renew") instead of a renewal, and stays out of the header total: that figure
-counts only what actually leaves the account each month, and the page names what it left out.
+12 · in 20d · won't renew") instead of a renewal.
+
+The header total is the value of the plans active right now, at the price in force this period:
+a plan whose intro rate has not ended yet counts at the cheap rate, a free plan counts at zero,
+and a term paid up front is left out because that money is already spent rather than monthly. The
+page names whatever it left out under the total instead of dropping it silently.
 
 One row per provider, so a plan that is billed under one provider id gets one block: a Cursor
 subscription charged in euros is still `provider = "cursor"`, with `currency`/`price` overriding

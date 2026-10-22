@@ -12,6 +12,7 @@
 #   renews_at  ISO date of a known past charge, rolled forward — use for annual auto-renewals
 #   ends_at    last day of a plan that will not renew (prepaid term, or auto-renew off)
 #   label      display name; wins over the catalogue and the provider's own wording
+#   price = 0  a free plan: counted at zero and shown as "free"
 #   seats      seat count, when the plan is per seat
 #
 # Cost defaults to the plan's list price when the plan is recognised (Claude Pro $20,
@@ -46,6 +47,14 @@ renews_day = 4
 
 # xAI / Grok has no adapter (its API exposes API-key credits, not the subscription): add a block
 # like these if you hold SuperGrok.
+
+# A plan that costs nothing right now. It needs no charge day: there is nothing to charge.
+[[subscription]]
+provider = "opencode"
+label = "OpenCode"
+price = 0
+currency = "EUR"
+state = "active"
 
 # Paid up front for a year with no renewal: shown as an end date and kept out of the monthly
 # total. The same field covers a monthly plan with auto-renew switched off.

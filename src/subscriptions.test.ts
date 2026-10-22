@@ -196,10 +196,13 @@ describe("SubscriptionCatalog", () => {
       priceNext: null,
       currency: "USD",
       period: "monthly",
+      current: 20,
       monthly: 20,
       renewsAt: "2026-11-13T09:00:00.000Z",
       endsAt: null,
       recurring: true,
+      prepaid: false,
+      counts: true,
       state: "active",
       seats: null,
       source: "claude-oauth+config",
@@ -218,7 +221,13 @@ describe("SubscriptionCatalog", () => {
       [],
       NOW,
     );
-    expect(catalog.list()[0]).toMatchObject({ price: 15, priceNext: 30, monthly: 30, currency: "EUR" });
+    expect(catalog.list()[0]).toMatchObject({
+      price: 15,
+      priceNext: 30,
+      current: 15,
+      monthly: 30,
+      currency: "EUR",
+    });
   });
 
   test("annualises a term paid up front and reports when it ends instead of a renewal", () => {
@@ -228,11 +237,14 @@ describe("SubscriptionCatalog", () => {
       NOW,
     );
     expect(catalog.list()[0]).toMatchObject({
+      current: 3,
       monthly: 3,
       currency: "EUR",
       renewsAt: null,
       endsAt: "2027-02-28",
       recurring: false,
+      prepaid: true,
+      counts: false,
     });
   });
 
@@ -247,13 +259,14 @@ describe("SubscriptionCatalog", () => {
       [claudeFacts],
       NOW,
     );
+    // Priced at what is charged now: 15 EUR for the intro rate, 3 for the annual term.
     expect(catalog.totals()).toEqual([
       { currency: "USD", monthly: 80 },
-      { currency: "EUR", monthly: 33 },
+      { currency: "EUR", monthly: 18 },
     ]);
   });
 
-  test("leaves plans that will not renew out of the monthly total", () => {
+  test("leaves a plan paid up front out of the monthly total", () => {
     const catalog = new SubscriptionCatalog(
       [
         { provider: "cursor", label: "Premium", currency: "EUR", price: 15.5, priceNext: 31, renewsDay: 17 },
@@ -263,28 +276,69 @@ describe("SubscriptionCatalog", () => {
       [],
       NOW,
     );
-    // 31 + 21.42: what actually leaves the account every month.
-    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 52.42 }]);
+    // 15.50 + 21.42: what is charged now, without the prepaid 3 or the 31 that starts later.
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 36.92 }]);
     expect(catalog.list().find((s) => s.provider === "zai")).toMatchObject({ recurring: false, monthly: 3 });
     expect(catalog.list().find((s) => s.provider === "claude")).toMatchObject({ recurring: true });
   });
 
-  test("drops a cancelled monthly plan from the total but keeps its end date", () => {
+  test("counts a plan that is still running even though it will not renew", () => {
     const catalog = new SubscriptionCatalog(
       [
         { provider: "claude", currency: "EUR", price: 21.42, renewsDay: 6 },
-        { provider: "codex", currency: "EUR", price: 23, endsAt: "2026-11-12" },
+        { provider: "codex", currency: "EUR", price: 23, endsAt: "2026-11-12", state: "active" },
+      ],
+      [],
+      NOW,
+    );
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 44.42 }]);
+    expect(catalog.list().find((s) => s.provider === "codex")).toMatchObject({
+      current: 23,
+      recurring: false,
+      prepaid: false,
+      counts: true,
+      renewsAt: null,
+      endsAt: "2026-11-12",
+    });
+  });
+
+  test("leaves a cancelled plan out of the total", () => {
+    const catalog = new SubscriptionCatalog(
+      [
+        { provider: "claude", currency: "EUR", price: 21.42, renewsDay: 6 },
+        { provider: "codex", currency: "EUR", price: 23, state: "cancelled" },
       ],
       [],
       NOW,
     );
     expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 21.42 }]);
-    expect(catalog.list().find((s) => s.provider === "codex")).toMatchObject({
-      monthly: 23,
-      recurring: false,
-      renewsAt: null,
-      endsAt: "2026-11-12",
-    });
+    expect(catalog.list().find((s) => s.provider === "codex")).toMatchObject({ counts: false });
+  });
+
+  test("totals the price in force now, not the rate that starts at the next charge", () => {
+    const catalog = new SubscriptionCatalog(
+      [
+        { provider: "cursor", currency: "EUR", price: 15.5, priceNext: 31, renewsDay: 17 },
+        { provider: "claude", currency: "EUR", price: 21.42, renewsDay: 6 },
+      ],
+      [],
+      NOW,
+    );
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 36.92 }]);
+    const claude = catalog.list().find((s) => s.provider === "claude");
+    const cursor = catalog.list().find((s) => s.provider === "cursor");
+    expect(claude).toMatchObject({ current: 21.42, monthly: 21.42 });
+    expect(cursor).toMatchObject({ current: 15.5, monthly: 31 });
+  });
+
+  test("counts a free plan at zero rather than asking for a price", () => {
+    const catalog = new SubscriptionCatalog(
+      [{ provider: "opencode", label: "OpenCode", price: 0, currency: "EUR", state: "active" }],
+      [],
+      NOW,
+    );
+    expect(catalog.list()[0]).toMatchObject({ plan: "OpenCode", current: 0, counts: true });
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 0 }]);
   });
 
   test("includes a provider that only reports facts, unpriced if the plan is unknown", () => {

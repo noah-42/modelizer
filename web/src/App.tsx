@@ -318,7 +318,10 @@ function DiaryView() {
           </div>
           {day.providers.map((prov) => (
             <div key={prov.id} className="diary-provider">
-              <div className="diary-provider-name">{prov.id}</div>
+              <div className="diary-provider-name">
+                <ProviderIcon id={prov.id} />
+                {prov.id}
+              </div>
               {prov.entries.map((en, i) => (
                 <div key={`${en.label}/${en.model ?? ""}/${i}`} className="diary-entry">
                   <span className="diary-entry-label">
@@ -365,8 +368,8 @@ function SubscriptionsView() {
   }, []);
 
   const rows = data?.subscriptions ?? [];
-  const endingRows = rows.filter((s) => !s.recurring);
-  const recurringCount = rows.length - endingRows.length;
+  const countedRows = rows.filter((s) => s.counts);
+  const excludedRows = rows.filter((s) => !s.counts);
   // Currencies are never added together: one figure per currency.
   const totalLine = data === null ? "" : data.totals.map((t) => money(t.monthly, t.currency)).join(" + ");
   return (
@@ -390,13 +393,13 @@ function SubscriptionsView() {
         <div className="subs-summary">
           <strong>{totalLine || "—"}</strong>
           <span className="muted">
-            per month · {recurringCount} recurring plan{recurringCount === 1 ? "" : "s"}
+            per month · {countedRows.length} active plan{countedRows.length === 1 ? "" : "s"}
           </span>
         </div>
       )}
-      {endingRows.length > 0 && data !== null && (
+      {excludedRows.length > 0 && data !== null && (
         <div className="subs-note muted">
-          won't renew, so not counted above · {endingRows.map(endingNote).join(" · ")}
+          not counted above · {excludedRows.map(excludedNote).join(" · ")}
         </div>
       )}
       <div className="cards">
@@ -414,7 +417,10 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>{s.provider}</h2>
+        <h2>
+          <ProviderIcon id={s.provider} />
+          {s.provider}
+        </h2>
         <div className="badges">
           <span className={`badge ${stateTone(s.state)}`}>{s.state}</span>
         </div>
@@ -444,31 +450,34 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   );
 }
 
-/** A plan that will not renew: name it and its last day, so the total above can be trusted. */
-function endingNote(s: Subscription): string {
-  return `${s.plan} ends ${s.endsAt === null ? "unknown" : fmtRenewalDay(s.endsAt)}`;
+/** Name a plan the total leaves out, and why, so the number above can be trusted. */
+function excludedNote(s: Subscription): string {
+  const reason = s.prepaid ? "paid up front" : s.state === "cancelled" ? "cancelled" : "not charging now";
+  const ends = s.endsAt === null ? "" : `, ends ${fmtRenewalDay(s.endsAt)}`;
+  return `${s.plan} — ${reason}${ends}`;
 }
 
-/** What the plan costs per month, plus the amount actually charged this period. */
+/** What the plan costs this month, with the price change or the yearly bill as the footnote. */
 function monthlyCost(s: Subscription): ReactNode {
-  if (s.monthly === null) return <span className="muted">set price</span>;
+  if (s.current === null) return <span className="muted">set price</span>;
+  if (s.current === 0) return <strong>free</strong>;
   if (s.price !== null && s.priceNext !== null && s.priceNext !== s.price) {
     return (
       <>
-        <strong>{money(s.monthly, s.currency)}</strong>
-        <span className="muted"> from the next charge · {money(s.price, s.currency)} now</span>
+        <strong>{money(s.current, s.currency)}</strong>
+        <span className="muted"> · {money(s.priceNext, s.currency)} from the next charge</span>
       </>
     );
   }
   if (s.period === "annual" && s.price !== null) {
     return (
       <>
-        <strong>{money(s.monthly, s.currency)}</strong>
+        <strong>{money(s.current, s.currency)}</strong>
         <span className="muted"> · {money(s.price, s.currency)} a year</span>
       </>
     );
   }
-  return <strong>{money(s.monthly, s.currency)}</strong>;
+  return <strong>{money(s.current, s.currency)}</strong>;
 }
 
 /** A recurring charge shows its next date; a plan that will not renew shows when it stops. */
@@ -485,6 +494,39 @@ function chargeLine(s: Subscription, tick: number): ReactNode {
     <span title={s.renewsAt}>
       {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
     </span>
+  );
+}
+
+/** Brand marks live in web/public/providers; an unknown provider falls back to its initial. */
+const PROVIDER_ICONS: Readonly<Record<string, string>> = {
+  claude: "claude",
+  anthropic: "claude",
+  codex: "openai",
+  openai: "openai",
+  cursor: "cursor",
+  openrouter: "openrouter",
+  zai: "zai",
+  opencode: "opencode",
+};
+
+function ProviderIcon({ id }: { id: string }) {
+  const asset = PROVIDER_ICONS[id];
+  const [broken, setBroken] = useState(false);
+  if (asset === undefined || broken) {
+    return (
+      <span className="provider-icon provider-icon-text" aria-hidden="true">
+        {id.slice(0, 1).toUpperCase()}
+      </span>
+    );
+  }
+  return (
+    <img
+      className="provider-icon"
+      src={`/providers/${asset}.svg`}
+      alt=""
+      aria-hidden="true"
+      onError={() => setBroken(true)}
+    />
   );
 }
 
@@ -597,7 +639,10 @@ function ProviderCard({
   return (
     <section className="card">
       <div className="card-head">
-        <h2>{p.id}</h2>
+        <h2>
+          <ProviderIcon id={p.id} />
+          {p.id}
+        </h2>
         <div className="badges">
           <span className="badge tier" title={`polls every ${p.pollEverySeconds}s`}>
             T{p.stabilityTier}
