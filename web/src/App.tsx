@@ -678,15 +678,16 @@ function providerName(id: string): string {
 
 /** Brand marks live in web/public/providers; an unknown provider falls back to its initial. */
 const PROVIDER_ICONS: Readonly<Record<string, string>> = {
-  claude: "claude",
-  anthropic: "claude",
-  codex: "openai",
-  openai: "openai",
-  cursor: "cursor",
-  openrouter: "openrouter",
-  zai: "zai",
-  opencode: "opencode",
-  freellmapi: "freellm",
+  claude: "claude.svg",
+  anthropic: "claude.svg",
+  codex: "openai.svg",
+  openai: "openai.svg",
+  cursor: "cursor.svg",
+  openrouter: "openrouter.svg",
+  zai: "zai.svg",
+  opencode: "opencode.svg",
+  freellmapi: "freellm.svg",
+  deepseek: "deepseek.png",
 };
 
 function ProviderIcon({ id }: { id: string }) {
@@ -702,7 +703,7 @@ function ProviderIcon({ id }: { id: string }) {
   return (
     <img
       className="provider-icon"
-      src={`/providers/${asset}.svg`}
+      src={`/providers/${asset}`}
       alt=""
       aria-hidden="true"
       onError={() => setBroken(true)}
