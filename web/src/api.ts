@@ -151,8 +151,6 @@ export interface SubscriptionsResponse {
   configPath: string;
   /** Monthly spend per currency for plans that keep charging. */
   totals: CurrencyTotal[];
-  /** Amortised monthly value of prepaid terms, excluded from `totals`. */
-  prepaid: CurrencyTotal[];
   subscriptions: Subscription[];
   /** Set when subscriptions.toml could not be parsed. */
   error: string | null;

@@ -365,11 +365,10 @@ function SubscriptionsView() {
   }, []);
 
   const rows = data?.subscriptions ?? [];
-  const prepaidRows = rows.filter((s) => !s.recurring);
-  const recurringCount = rows.length - prepaidRows.length;
+  const endingRows = rows.filter((s) => !s.recurring);
+  const recurringCount = rows.length - endingRows.length;
   // Currencies are never added together: one figure per currency.
   const totalLine = data === null ? "" : data.totals.map((t) => money(t.monthly, t.currency)).join(" + ");
-  const prepaidLine = data === null ? "" : data.prepaid.map((t) => money(t.monthly, t.currency)).join(" + ");
   return (
     <>
       <div className="head-line">
@@ -395,9 +394,9 @@ function SubscriptionsView() {
           </span>
         </div>
       )}
-      {prepaidRows.length > 0 && data !== null && (
-        <div className="subs-prepaid muted">
-          {prepaidLine || "—"} a month of prepaid plans is not counted above · {prepaidNote(prepaidRows)}
+      {endingRows.length > 0 && data !== null && (
+        <div className="subs-note muted">
+          won't renew, so not counted above · {endingRows.map(endingNote).join(" · ")}
         </div>
       )}
       <div className="cards">
@@ -411,7 +410,7 @@ function SubscriptionsView() {
 
 function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   const seats = s.seats !== null && s.seats > 1 ? ` · ${s.seats} seats` : "";
-  const prepaid = s.endsAt !== null;
+  const ending = s.endsAt !== null;
   return (
     <section className="card">
       <div className="card-head">
@@ -432,7 +431,7 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
         <span>{monthlyCost(s)}</span>
       </div>
       <div className="sub-line">
-        <span className="muted">{prepaid ? "paid through" : "next charge"}</span>
+        <span className="muted">{ending ? "ends" : "next charge"}</span>
         <span>{chargeLine(s, tick)}</span>
       </div>
       <div className="sub-line">
@@ -445,15 +444,9 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   );
 }
 
-/** Prepaid terms amortise to a monthly figure, but they are not a monthly charge — name them. */
-function prepaidNote(rows: Subscription[]): string {
-  return rows
-    .map((s) => {
-      const yearly = s.price === null ? "unpriced" : `${money(s.price, s.currency)} a year`;
-      const until = s.endsAt === null ? "" : `, paid through ${fmtRenewalDay(s.endsAt)}`;
-      return `${s.plan} — ${yearly}${until}`;
-    })
-    .join(" · ");
+/** A plan that will not renew: name it and its last day, so the total above can be trusted. */
+function endingNote(s: Subscription): string {
+  return `${s.plan} ends ${s.endsAt === null ? "unknown" : fmtRenewalDay(s.endsAt)}`;
 }
 
 /** What the plan costs per month, plus the amount actually charged this period. */
@@ -478,12 +471,12 @@ function monthlyCost(s: Subscription): ReactNode {
   return <strong>{money(s.monthly, s.currency)}</strong>;
 }
 
-/** A recurring charge shows its date and countdown; a prepaid term shows when it runs out. */
+/** A recurring charge shows its next date; a plan that will not renew shows when it stops. */
 function chargeLine(s: Subscription, tick: number): ReactNode {
   if (s.endsAt !== null) {
     return (
       <span title={s.endsAt}>
-        {fmtRenewalDay(s.endsAt)} · ends in {countdown(s.endsAt, tick)}
+        {fmtRenewalDay(s.endsAt)} · in {countdown(s.endsAt, tick)} · won't renew
       </span>
     );
   }

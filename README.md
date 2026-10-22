@@ -51,8 +51,8 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
   undocumented endpoint drifts)
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
   `price`, `priceNext`, `currency`, `monthly`, `recurring`, `renewsAt`/`endsAt`, `source`, plus
-  `totals[]` (recurring monthly spend **per currency** — USD and EUR are never added together) and
-  `prepaid[]` (the amortised monthly value of prepaid terms, kept out of `totals[]`). A malformed
+  `totals[]` (recurring monthly spend **per currency** — USD and EUR are never added together).
+  A plan that will not renew is out of `totals[]` and carries `recurring: false`. A malformed
   `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
 
 ## Subscriptions
@@ -75,10 +75,10 @@ Money stays in the currency it is billed in: `currency = "EUR"` is shown as euro
 separately from dollars, because converting would invent an exchange rate. `price_next` models an
 intro rate (charged 15 now, 30 from the next renewal): the row shows both, the total uses the
 recurring amount. `renews_day` is a day of month (clamped in short months), `renews_at` rolls an
-annual charge forward, and `ends_at` marks a prepaid term that simply runs out — shown as "paid
-through" rather than a renewal. A prepaid term is not a monthly charge, so its amortised figure
-sits under the total instead of inside it: the header counts only what leaves the account each
-month.
+annual charge forward, and `ends_at` marks a plan that will not renew — an annual term paid up
+front, or a subscription with auto-renew switched off. Such a plan shows its last day ("ends Nov
+12 · in 20d · won't renew") instead of a renewal, and stays out of the header total: that figure
+counts only what actually leaves the account each month, and the page names what it left out.
 
 One row per provider, so a plan that is billed under one provider id gets one block: a Cursor
 subscription charged in euros is still `provider = "cursor"`, with `currency`/`price` overriding

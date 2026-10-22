@@ -221,7 +221,7 @@ describe("SubscriptionCatalog", () => {
     expect(catalog.list()[0]).toMatchObject({ price: 15, priceNext: 30, monthly: 30, currency: "EUR" });
   });
 
-  test("annualises a prepaid term and reports when it ends instead of a renewal", () => {
+  test("annualises a term paid up front and reports when it ends instead of a renewal", () => {
     const catalog = new SubscriptionCatalog(
       [{ provider: "zai", price: 36, currency: "EUR", period: "annual", endsAt: "2027-02-28" }],
       [],
@@ -251,10 +251,9 @@ describe("SubscriptionCatalog", () => {
       { currency: "USD", monthly: 80 },
       { currency: "EUR", monthly: 33 },
     ]);
-    expect(catalog.prepaidTotals()).toEqual([]);
   });
 
-  test("leaves a prepaid term out of the monthly total but still reports it", () => {
+  test("leaves plans that will not renew out of the monthly total", () => {
     const catalog = new SubscriptionCatalog(
       [
         { provider: "cursor", label: "Premium", currency: "EUR", price: 15.5, priceNext: 31, renewsDay: 17 },
@@ -264,11 +263,28 @@ describe("SubscriptionCatalog", () => {
       [],
       NOW,
     );
-    // 31 + 21.42: what actually leaves the account every month, without the prepaid €3.
+    // 31 + 21.42: what actually leaves the account every month.
     expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 52.42 }]);
-    expect(catalog.prepaidTotals()).toEqual([{ currency: "EUR", monthly: 3 }]);
     expect(catalog.list().find((s) => s.provider === "zai")).toMatchObject({ recurring: false, monthly: 3 });
     expect(catalog.list().find((s) => s.provider === "claude")).toMatchObject({ recurring: true });
+  });
+
+  test("drops a cancelled monthly plan from the total but keeps its end date", () => {
+    const catalog = new SubscriptionCatalog(
+      [
+        { provider: "claude", currency: "EUR", price: 21.42, renewsDay: 6 },
+        { provider: "codex", currency: "EUR", price: 23, endsAt: "2026-11-12" },
+      ],
+      [],
+      NOW,
+    );
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 21.42 }]);
+    expect(catalog.list().find((s) => s.provider === "codex")).toMatchObject({
+      monthly: 23,
+      recurring: false,
+      renewsAt: null,
+      endsAt: "2026-11-12",
+    });
   });
 
   test("includes a provider that only reports facts, unpriced if the plan is unknown", () => {

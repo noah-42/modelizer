@@ -79,8 +79,8 @@ export interface Subscription {
   /** Paid-through date for a prepaid term; null when it renews instead. */
   endsAt: string | null;
   /**
-   * True when the plan keeps charging, so it belongs in the monthly total. A prepaid term does
-   * not: its monthly figure is an amortisation of one payment already made, not a monthly bill.
+   * True when the plan keeps charging, so it belongs in the monthly total. A plan that will not
+   * renew does not: an annual term paid up front, or a subscription cancelled mid-term.
    */
   recurring: boolean;
   state: SubscriptionState;
@@ -315,15 +315,10 @@ export class SubscriptionCatalog {
 
   /**
    * Monthly spend per currency for plans that keep charging — what actually leaves the account
-   * every month. Prepaid terms are amortised separately by `prepaidTotals()`.
+   * every month. A plan that will not renew is left out; its row carries `recurring: false`.
    */
   totals(): CurrencyTotal[] {
     return sumByCurrency(this.list().filter((s) => s.recurring));
-  }
-
-  /** Amortised monthly value of prepaid terms (one payment spread over its term). */
-  prepaidTotals(): CurrencyTotal[] {
-    return sumByCurrency(this.list().filter((s) => !s.recurring));
   }
 
   private merge(provider: string): Subscription {
@@ -345,7 +340,7 @@ export class SubscriptionCatalog {
         },
         this.now,
       ) ?? facts?.renewsAt ?? null;
-    // A prepaid term ends, it does not charge: show the paid-through date instead of a renewal.
+    // A plan set not to renew ends, it does not charge: show its last day instead of a renewal.
     const endsAt = entry?.endsAt === undefined ? null : entry.endsAt;
 
     return {

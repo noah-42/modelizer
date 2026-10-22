@@ -484,7 +484,7 @@ code {
   font-variant-numeric: tabular-nums;
 }
 /* Sits under the total, explaining what the total leaves out. */
-.subs-prepaid {
+.subs-note {
   margin: -6px 0 12px;
   font-size: 13px;
 }

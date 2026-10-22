@@ -10,7 +10,7 @@
 #   period     "monthly" (default) or "annual"
 #   renews_day day of month it charges (1-31, clamped in short months)
 #   renews_at  ISO date of a known past charge, rolled forward — use for annual auto-renewals
-#   ends_at    paid-through date of a prepaid term that does not auto-renew
+#   ends_at    last day of a plan that will not renew (prepaid term, or auto-renew off)
 #   label      display name; wins over the catalogue and the provider's own wording
 #   seats      seat count, when the plan is per seat
 #
@@ -47,7 +47,8 @@ renews_day = 4
 # xAI / Grok has no adapter (its API exposes API-key credits, not the subscription): add a block
 # like these if you hold SuperGrok.
 
-# Prepaid annual term: no monthly charge, so it is shown as a paid-through date instead.
+# Paid up front for a year with no renewal: shown as an end date and kept out of the monthly
+# total. The same field covers a monthly plan with auto-renew switched off.
 [[subscription]]
 provider = "zai"
 label = "GLM Coding (annual)"
