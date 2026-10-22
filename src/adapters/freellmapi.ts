@@ -170,6 +170,9 @@ function monthlyEstimatePoint(snapshot: FreeLlmApiSnapshot, capturedAt: string):
   const used = snapshot.usage
     .filter((row) => row.day.startsWith(month))
     .reduce((total, row) => total + row.tokens_in + row.tokens_out, 0);
+  const requests = snapshot.usage
+    .filter((row) => row.day.startsWith(month))
+    .reduce((total, row) => total + row.requests, 0);
   const minimum = ranges.reduce((total, range) => total + range.minimum, 0);
   const maximum = ranges.reduce((total, range) => total + range.maximum, 0);
   const nextMonth = new Date(`${month}-01T00:00:00.000Z`);
@@ -187,7 +190,7 @@ function monthlyEstimatePoint(snapshot: FreeLlmApiSnapshot, capturedAt: string):
     window_end: nextMonth.toISOString(),
     reset_at: nextMonth.toISOString(),
     day: null,
-    requests: null,
+    requests,
     tokens_in: null,
     tokens_out: null,
     cost_usd: null,

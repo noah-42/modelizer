@@ -1013,9 +1013,22 @@ function windowIsIdle(point: UsagePoint): boolean {
 
 function quotaUsageText(point: UsagePoint): string {
   const estimate = point.source?.match(/^freellmapi-catalog-estimate:(.+)$/)?.[1];
-  if (estimate !== undefined) return `estimated ${estimate} tokens · ${fmtValue(point.used ?? 0, point.unit)} tokens used · `;
+  if (estimate !== undefined) {
+    const used = point.used ?? 0;
+    const average = point.requests !== null && point.requests > 0 ? used / point.requests : null;
+    const remaining = point.limit === null ? null : Math.max(point.limit - used, 0);
+    const prompts = average !== null && remaining !== null ? remaining / average : null;
+    const promptText = prompts === null || average === null ? "" : ` · ~${fmtCount(prompts)} prompts at ${fmtValue(average, "tokens")} each`;
+    return `estimated ${estimate} tokens · ${fmtValue(used, point.unit)} tokens used${promptText} · `;
+  }
   if (point.used === null) return "";
   return `${fmtValue(point.used, point.unit)}${point.unit === "tokens" ? " tokens" : ""} used · `;
+}
+
+function fmtCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(Math.round(value));
 }
 
 /** Per-model usage and spend, folded away behind their own summaries. */
