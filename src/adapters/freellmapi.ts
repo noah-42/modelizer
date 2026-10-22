@@ -1,0 +1,191 @@
+import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
+
+/** Default data file created by the official Docker install when its volume is mounted locally. */
+export const DEFAULT_FREELLMAPI_DB = join(homedir(), "freellmapi", "server", "data", "freeapi.db");
+export const FREELLMAPI_POLL_MS = 5 * 60_000;
+const PROVIDER_ID = "freellmapi";
+const DAILY_LABEL = "freellmapi-daily-usage";
+const MAX_MODEL_ROWS = 500;
+
+interface ModelRow {
+  platform: string;
+  model_id: string;
+  display_name: string;
+  rpd_limit: number | null;
+  tpd_limit: number | null;
+  rpm_limit: number | null;
+  tpm_limit: number | null;
+}
+
+interface UsageRow {
+  platform: string;
+  model_id: string;
+  day: string;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+interface FreeLlmApiSnapshot {
+  captured_at: string;
+  models: ModelRow[];
+  usage: UsageRow[];
+}
+
+/** FreeLLMAPI's local request ledger, read-only; no API key or dashboard cookie is needed. */
+export const freellmapiAdapter: Adapter = {
+  id: PROVIDER_ID,
+  stabilityTier: 3,
+  pollEveryMs: FREELLMAPI_POLL_MS,
+
+  isConfigured(env) {
+    return existsSync(databasePath(env));
+  },
+
+  missingCredentials(env) {
+    return existsSync(databasePath(env)) ? [] : [`FreeLLMAPI database not found: ${databasePath(env)}`];
+  },
+
+  notes: [
+    {
+      title: "Read from FreeLLMAPI's local ledger",
+      text: "Modelizer reads server/data/freeapi.db read-only. It imports successful request counts and input/output tokens per model; provider keys remain inside FreeLLMAPI and are never opened here.",
+    },
+    {
+      title: "Limits come from the local model catalogue",
+      text: "Numeric daily request/token limits are reported when FreeLLMAPI has them. A free-tier description such as '~3M/month' is not converted into a fabricated exact limit.",
+    },
+  ] satisfies ProviderNote[],
+
+  async collect(ctx: CollectContext) {
+    const path = databasePath(ctx.env);
+    if (!existsSync(path)) return [missingDatabasePoll(path)];
+    try {
+      return [readSnapshot(path, ctx.now)];
+    } catch (error) {
+      const message = (error as Error).message;
+      ctx.log(`freellmapi: database read failed (${message})`);
+      return [{ endpoint: "local-db", url: `file://${path}`, status: 0, body: message, json: null, headers: {}, optional: true }];
+    }
+  },
+
+  normalize(polls, capturedAt) {
+    const poll = polls.find((candidate) => candidate.endpoint === "local-db" && candidate.status === 200);
+    if (poll === undefined || poll.json === null) return [];
+    return normalizeSnapshot(poll.json as FreeLlmApiSnapshot, capturedAt);
+  },
+};
+
+/** Resolve the configurable SQLite path without making a user copy the database. */
+export function databasePath(env: Record<string, string | undefined>): string {
+  return env.FREELLMAPI_DB?.trim() || DEFAULT_FREELLMAPI_DB;
+}
+
+function missingDatabasePoll(path: string): RawPoll {
+  return { endpoint: "local-db", url: `file://${path}`, status: 0, body: "database not found", json: null, headers: {}, optional: true };
+}
+
+function readSnapshot(path: string, capturedAt: Date): RawPoll {
+  const db = new Database(path, { readonly: true });
+  try {
+    const models = db.query(`
+      SELECT platform, model_id, display_name, rpd_limit, tpd_limit, rpm_limit, tpm_limit
+      FROM models WHERE enabled = 1 ORDER BY platform, model_id LIMIT ${MAX_MODEL_ROWS}
+    `).all() as ModelRow[];
+    const usage = db.query(`
+      SELECT platform, model_id, substr(created_at, 1, 10) AS day,
+             count(*) AS requests,
+             coalesce(sum(max(input_tokens, 0)), 0) AS tokens_in,
+             coalesce(sum(max(output_tokens, 0)), 0) AS tokens_out
+      FROM requests WHERE status = 'success'
+      GROUP BY platform, model_id, substr(created_at, 1, 10)
+      ORDER BY day DESC, requests DESC LIMIT ${MAX_MODEL_ROWS}
+    `).all() as UsageRow[];
+    const snapshot: FreeLlmApiSnapshot = { captured_at: capturedAt.toISOString(), models, usage };
+    return { endpoint: "local-db", url: `file://${path}`, status: 200, body: JSON.stringify(snapshot), json: snapshot, headers: {} };
+  } finally {
+    db.close();
+  }
+}
+
+function normalizeSnapshot(snapshot: FreeLlmApiSnapshot, capturedAt: string): UsagePoint[] {
+  const limits = new Map(snapshot.models.map((model) => [`${model.platform}/${model.model_id}`, model]));
+  const points = snapshot.usage.flatMap((row) => {
+    const model = `${row.platform}/${row.model_id}`;
+    const point = usagePoint(row, capturedAt, model);
+    const limit = limits.get(model);
+    const quota = numericLimitPoint(row, limit, capturedAt, model);
+    return quota === null ? [point] : [point, quota];
+  });
+  const currentDay = capturedAt.slice(0, 10);
+  for (const model of snapshot.models) {
+    const modelId = `${model.platform}/${model.model_id}`;
+    const currentUsage = snapshot.usage.find((row) => row.day === currentDay && `${row.platform}/${row.model_id}` === modelId);
+    if (currentUsage === undefined && model.tpd_limit !== null) {
+      points.push(numericLimitPoint({ platform: model.platform, model_id: model.model_id, day: currentDay, requests: 0, tokens_in: 0, tokens_out: 0 }, model, capturedAt, modelId)!);
+    }
+  }
+  return points;
+}
+
+function usagePoint(row: UsageRow, capturedAt: string, model: string): UsagePoint {
+  return {
+    provider: PROVIDER_ID,
+    kind: "usage",
+    label: DAILY_LABEL,
+    model,
+    used: row.tokens_in + row.tokens_out,
+    limit: null,
+    remaining: null,
+    unit: "tokens",
+    window_start: `${row.day}T00:00:00.000Z`,
+    window_end: `${row.day}T23:59:59.999Z`,
+    reset_at: nextDay(row.day),
+    day: row.day,
+    requests: row.requests,
+    tokens_in: row.tokens_in,
+    tokens_out: row.tokens_out,
+    cost_usd: null,
+    captured_at: capturedAt,
+    source: "freellmapi-db",
+    quota_window: null,
+    stale: false,
+  };
+}
+
+function numericLimitPoint(row: UsageRow, model: ModelRow | undefined, capturedAt: string, modelId: string): UsagePoint | null {
+  if (model?.tpd_limit === null || model?.tpd_limit === undefined) return null;
+  const used = row.tokens_in + row.tokens_out;
+  return {
+    provider: PROVIDER_ID,
+    kind: "quota",
+    label: "freellmapi-daily-token-limit",
+    model: modelId,
+    used,
+    limit: model.tpd_limit,
+    remaining: Math.max(model.tpd_limit - used, 0),
+    unit: "tokens",
+    window_start: `${row.day}T00:00:00.000Z`,
+    window_end: `${row.day}T23:59:59.999Z`,
+    reset_at: nextDay(row.day),
+    day: row.day,
+    requests: row.requests,
+    tokens_in: row.tokens_in,
+    tokens_out: row.tokens_out,
+    cost_usd: null,
+    captured_at: capturedAt,
+    source: "freellmapi-db",
+    quota_window: "daily",
+    stale: false,
+  };
+}
+
+function nextDay(day: string): string {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString();
+}
