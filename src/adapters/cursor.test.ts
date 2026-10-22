@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { cursorAdapter, cursorFactsFromProfile, cursorStatePath, readCursorAccessToken } from "./cursor";
+import {
+  cursorAdapter,
+  cursorFactsFromProfile,
+  cursorStatePath,
+  cursorUsagePoint,
+  readCursorAccessToken,
+} from "./cursor";
 import type { RawPoll } from "./types";
 
 const root = mkdtempSync(join(tmpdir(), "modelizer-cursor-"));
@@ -18,8 +24,19 @@ const profile = {
   pendingCancellationDate: null,
 };
 
-function poll(json: unknown, status = 200): RawPoll {
-  return { endpoint: "stripe-profile", url: "https://api2.cursor.sh/auth/full_stripe_profile", status, body: "", json, headers: {} };
+const usage = {
+  billingCycleStart: "2026-10-01T00:00:00.000Z",
+  billingCycleEnd: "2026-11-01T00:00:00.000Z",
+  membershipType: "premium",
+  isUnlimited: false,
+  individualUsage: {
+    plan: { enabled: true, used: 461, limit: 4615, remaining: 4154, totalPercentUsed: 10 },
+    onDemand: { enabled: false, used: 0, limit: null, remaining: null },
+  },
+};
+
+function poll(json: unknown, status = 200, endpoint = "stripe-profile"): RawPoll {
+  return { endpoint, url: `https://api2.cursor.sh/auth/${endpoint}`, status, body: "", json, headers: {} };
 }
 
 describe("cursorFactsFromProfile", () => {
@@ -88,8 +105,37 @@ describe("cursorAdapter", () => {
     expect(cursorStatePath({})).toContain("Cursor/User/globalStorage/state.vscdb");
   });
 
-  test("contributes no usage points — the plan facts are the whole payload", () => {
+  test("reports the billing cycle as a percent quota window", () => {
+    const points = cursorAdapter.normalize([poll(usage, 200, "usage-summary")], NOW.toISOString());
+    expect(points).toHaveLength(1);
+    expect(points[0]).toMatchObject({
+      provider: "cursor",
+      label: "cursor-plan-usage",
+      kind: "quota",
+      used: 10,
+      limit: 100,
+      remaining: 90,
+      unit: "percent",
+      quota_window: "monthly",
+      window_start: "2026-10-01T00:00:00.000Z",
+      reset_at: "2026-11-01T00:00:00.000Z",
+      source: "cursor-api",
+    });
+  });
+
+  test("names a yearly cycle as annual", () => {
+    const yearly = { ...usage, billingCycleEnd: "2027-10-01T00:00:00.000Z" };
+    expect(cursorUsagePoint(yearly, NOW.toISOString())).toMatchObject({ quota_window: "annual" });
+  });
+
+  test("reports no usage points when the usage poll fails", () => {
     expect(cursorAdapter.normalize([poll(profile)], NOW.toISOString())).toEqual([]);
+    expect(cursorAdapter.normalize([poll({ message: "nope" }, 401, "usage-summary")], NOW.toISOString())).toEqual([]);
+  });
+
+  test("reports nothing rather than a blank window when the response has no cycle", () => {
+    expect(cursorUsagePoint({}, NOW.toISOString())).toBeNull();
+    expect(cursorUsagePoint({ individualUsage: {} }, NOW.toISOString())).toBeNull();
   });
 
   test("reports facts from a successful profile poll", () => {

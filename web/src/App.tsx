@@ -41,6 +41,7 @@ const LABELS: Record<string, string> = {
   "codex-weekly-percent": "Weekly window (OpenAI)",
   "codex-5h-turns": "5-hour session turns",
   monthly: "Monthly token pool",
+  "cursor-plan-usage": "Plan usage (Cursor)",
   "token-window": "Token window",
   mcp: "MCP tool calls",
   "coding-window-by-model": "Window usage",
@@ -793,15 +794,18 @@ function ProviderCard({
 
 /**
  * The windows that gate a working session, tightest first: the five-hour window and the weekly
- * budget above it. Not every plan has a five-hour window — SpaceX (Cursor) only meters by the
- * week — so a card with no five-hour window still gets its weekly refresh on the front.
+ * budget above it. Plans differ — SpaceX (Cursor) meters a billing cycle and has no five-hour
+ * window at all — so when neither of those exists the card falls back to whatever quota window the
+ * provider does report, rather than showing an empty front.
  */
 const GATE_WINDOWS = ["five_hour", "weekly"] as const;
 
 function windowsAboveTheFold(p: OverviewProvider): UsagePoint[] {
-  return GATE_WINDOWS.flatMap((window) =>
+  const gating = GATE_WINDOWS.flatMap((window) =>
     p.points.filter((pt) => pt.day === null && pt.quota_window === window),
   );
+  if (gating.length > 0) return gating;
+  return p.points.filter((pt) => pt.day === null && pt.kind === "quota" && pt.reset_at !== null);
 }
 
 /**

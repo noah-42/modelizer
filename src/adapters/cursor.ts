@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SubscriptionFacts, SubscriptionState } from "../subscriptions";
 import { fetchPoll } from "./types";
-import type { Adapter, CollectContext, ProviderNote, RawPoll } from "./types";
+import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
 
 /**
  * Cursor — stability tier 2: undocumented endpoint, and the session token is read from Cursor's
@@ -14,13 +14,18 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll } from "./types";
  * verified 2026-10-22 answers with plan and billing state only:
  *   { membershipType: "pro", subscriptionStatus: "active", isYearlyPlan: false,
  *     pendingCancellationDate: null, … }
- * No usage, no price, no charge date: `/api/usage-summary` wants a web cookie session (401 with
- * this token), and `/auth/stripe_profile` answers a bare `false`. So this adapter contributes
- * subscription facts and no usage points — the dashboard card points at the Subscriptions page.
+ * `GET /auth/usage-summary` (same bearer) answers the included usage for the current billing
+ * cycle and the cycle's end, which is the only usage Cursor exposes to this token; it reports no
+ * five-hour window and no weekly figure. Price and charge date stay in subscriptions.toml.
  */
 
 export const CURSOR_PROFILE_URL = "https://api2.cursor.sh/auth/full_stripe_profile";
 export const CURSOR_PROFILE_ENDPOINT = "stripe-profile";
+export const CURSOR_USAGE_URL = "https://api2.cursor.sh/auth/usage-summary";
+export const CURSOR_USAGE_ENDPOINT = "usage-summary";
+/** Cursor reports percentages, never a unit for its absolute included figure, so we show the share. */
+const PERCENT_FULL = 100;
+const ONE_DAY_MS = 86_400_000;
 const CURSOR_TOKEN_KEY = "cursorAuth/accessToken";
 const CURSOR_POLL_MS = 15 * 60_000;
 
@@ -91,6 +96,92 @@ export function cursorFactsFromProfile(json: unknown): SubscriptionFacts | null 
   };
 }
 
+/**
+ * The billing cycle Cursor meters on, as a quota point. `totalPercentUsed` is reported directly, so
+ * the absolute `limit` (an undocumented unit) never has to be interpreted.
+ */
+export function cursorUsagePoint(json: unknown, capturedAt: string): UsagePoint | null {
+  const plan = planOf(json);
+  const root = asObject(json);
+  const percent = numberOf(plan.totalPercentUsed);
+  const windowStart = isoOf(root.billingCycleStart);
+  const resetAt = isoOf(root.billingCycleEnd);
+  if (percent === null && resetAt === null) return null;
+  return {
+    provider: "cursor",
+    kind: "quota",
+    label: "cursor-plan-usage",
+    model: null,
+    used: percent,
+    limit: PERCENT_FULL,
+    remaining: percent === null ? null : Math.max(PERCENT_FULL - percent, 0),
+    unit: "percent",
+    window_start: windowStart,
+    window_end: resetAt,
+    reset_at: resetAt,
+    day: null,
+    requests: null,
+    tokens_in: null,
+    tokens_out: null,
+    cost_usd: null,
+    captured_at: capturedAt,
+    source: "cursor-api",
+    quota_window: cadenceOf(windowStart, resetAt),
+    stale: false,
+  };
+}
+
+/** `individualUsage.plan`, where the included usage lives; an empty object when absent. */
+function planOf(json: unknown): Record<string, unknown> {
+  const individual = asObject(asObject(json).individualUsage);
+  return asObject(individual.plan);
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function numberOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isoOf(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+/** Name the cycle length when it is a calendar month or year, so the card says what it meters. */
+function cadenceOf(start: string | null, end: string | null): string | null {
+  if (start === null || end === null) return null;
+  const days = (Date.parse(end) - Date.parse(start)) / ONE_DAY_MS;
+  if (days >= 27 && days <= 33) return "monthly";
+  if (days >= 360 && days <= 370) return "annual";
+  return null;
+}
+
+async function pollWithToken(
+  ctx: CollectContext,
+  endpoint: string,
+  url: string,
+  token: string,
+): Promise<RawPoll> {
+  try {
+    return await fetchPoll(ctx, {
+      endpoint,
+      url,
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      optional: true,
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    ctx.log(`cursor: ${endpoint} request failed (${message})`);
+    return { endpoint, url, status: 0, body: message, json: null, headers: {}, optional: true };
+  }
+}
+
 function tokenMissingPoll(statePath: string): RawPoll {
   return {
     endpoint: "access-token",
@@ -118,8 +209,8 @@ export const cursorAdapter: Adapter = {
 
   notes: [
     {
-      title: "Plan only — usage needs a browser session",
-      text: "Cursor's API states the plan and billing status for the signed-in user, which is what the Subscriptions page shows. Request counts, token spend and the charge date are not in that response: /api/usage-summary only answers a cursor.com cookie session, so nothing here scrapes the dashboard. Price and renewal day come from subscriptions.toml.",
+      title: "Metered per billing cycle, not per five hours",
+      text: "usage-summary reports the included usage for the current billing cycle and when that cycle ends, which is the reset shown above. Cursor states no five-hour window and no weekly figure to this token, so the card does not invent one. Price and renewal day come from subscriptions.toml.",
     },
     {
       title: "Where the token comes from",
@@ -131,34 +222,18 @@ export const cursorAdapter: Adapter = {
     const statePath = cursorStatePath(ctx.env);
     const token = readCursorAccessToken(statePath);
     if (token === null) return [tokenMissingPoll(statePath)];
-    try {
-      const poll = await fetchPoll(ctx, {
-        endpoint: CURSOR_PROFILE_ENDPOINT,
-        url: CURSOR_PROFILE_URL,
-        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
-        optional: true,
-      });
-      return [poll];
-    } catch (err) {
-      const message = (err as Error).message;
-      ctx.log(`cursor: stripe profile request failed (${message})`);
-      return [
-        {
-          endpoint: CURSOR_PROFILE_ENDPOINT,
-          url: CURSOR_PROFILE_URL,
-          status: 0,
-          body: message,
-          json: null,
-          headers: {},
-          optional: true,
-        },
-      ];
-    }
+    return Promise.all([
+      pollWithToken(ctx, CURSOR_PROFILE_ENDPOINT, CURSOR_PROFILE_URL, token),
+      pollWithToken(ctx, CURSOR_USAGE_ENDPOINT, CURSOR_USAGE_URL, token),
+    ]);
   },
 
-  /** No usage numbers are available, so the plan facts are the whole contribution. */
-  normalize() {
-    return [];
+  /** The included usage for the current billing cycle, when that poll succeeded. */
+  normalize(polls, capturedAt) {
+    const usage = polls.find((p) => p.endpoint === CURSOR_USAGE_ENDPOINT && p.status === 200);
+    if (usage === undefined) return [];
+    const point = cursorUsagePoint(usage.json, capturedAt);
+    return point === null ? [] : [point];
   },
 
   subscriptionFacts(polls) {
