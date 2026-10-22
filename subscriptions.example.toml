@@ -11,7 +11,7 @@
 #   renews_day day of month it charges (1-31, clamped in short months)
 #   renews_at  ISO date of a known past charge, rolled forward — use for annual auto-renewals
 #   ends_at    paid-through date of a prepaid term that does not auto-renew
-#   label      display name when the plan has no catalogue entry
+#   label      display name; wins over the catalogue and the provider's own wording
 #   seats      seat count, when the plan is per seat
 #
 # Cost defaults to the plan's list price when the plan is recognised (Claude Pro $20,
