@@ -94,7 +94,8 @@ describe("db", () => {
     state = db.getAdapterState("openrouter");
     expect(state?.consecutive_failures).toBe(0);
     expect(state?.last_success).toBe("2026-10-03T00:30:00Z");
-    expect(state?.last_error).toBe("HTTP 500");
+    expect(state?.last_error).toBeNull();
+    expect(state?.last_error_at).toBeNull();
     db.close();
   });
 

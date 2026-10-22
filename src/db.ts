@@ -181,8 +181,8 @@ INSERT INTO adapter_state (provider, last_success, last_error, last_error_at, co
 VALUES ($provider, $last_success, $last_error, $last_error_at, $failures, $at)
 ON CONFLICT(provider) DO UPDATE SET
   last_success = COALESCE($last_success, last_success),
-  last_error = CASE WHEN $is_fail = 1 THEN $last_error ELSE last_error END,
-  last_error_at = CASE WHEN $is_fail = 1 THEN COALESCE($last_error_at, $at) ELSE last_error_at END,
+  last_error = CASE WHEN $is_fail = 1 THEN $last_error ELSE NULL END,
+  last_error_at = CASE WHEN $is_fail = 1 THEN COALESCE($last_error_at, $at) ELSE NULL END,
   consecutive_failures = CASE WHEN $is_fail = 1 THEN adapter_state.consecutive_failures + 1 ELSE 0 END,
   updated_at = $at
 `;
