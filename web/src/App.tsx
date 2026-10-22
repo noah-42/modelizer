@@ -708,7 +708,7 @@ function ProviderCard({
         <div key={w.label} className="window-reset" title={w.reset_at ?? undefined}>
           <span className="status-dot" />
           <span>
-            <strong>{friendlyLabel(w.label)}</strong>{" "}
+            {friendlyLabel(w.label)}{" "}
             {w.used !== null && w.unit === "percent" ? `${fmtValue(w.used, w.unit)} used · ` : ""}
             {w.reset_at === null ? (
               <span className="muted">
@@ -718,7 +718,7 @@ function ProviderCard({
               </span>
             ) : (
               <>
-                refreshes in <strong className="countdown">{countdown(w.reset_at, tick)}</strong> · at{" "}
+                refreshes in <span className="countdown">{countdown(w.reset_at, tick)}</span> · at{" "}
                 {fmtLocalClock(w.reset_at)}
               </>
             )}

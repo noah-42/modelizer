@@ -264,6 +264,10 @@ body {
   margin: 0 0 6px;
   font-size: 13px;
 }
+/* Kept upright and non-bold: this line is a status read-out, not a heading. */
+.window-reset .countdown {
+  font-variant-numeric: tabular-nums;
+}
 .card-body {
   margin-top: 10px;
 }
