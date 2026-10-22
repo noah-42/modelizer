@@ -63,6 +63,10 @@ export const freellmapiAdapter: Adapter = {
       title: "Limits come from the local model catalogue",
       text: "Numeric daily request/token limits are reported when FreeLLMAPI has them. A free-tier description such as '~3M/month' is not converted into a fabricated exact limit.",
     },
+    {
+      title: "Prompt estimate",
+      text: "The estimated monthly capacity combines the model catalogue's approximate monthly budgets, then subtracts this month's imported usage. The prompt estimate divides remaining tokens by this month's observed average tokens per successful request. That total includes context and model output, so short prompts may allow many more requests while long coding/tool contexts allow fewer. It is an estimate, not a credit balance or provider guarantee.",
+    },
   ] satisfies ProviderNote[],
 
   async collect(ctx: CollectContext) {
