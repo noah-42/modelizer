@@ -133,7 +133,16 @@ export function loadSubscriptions(path = DEFAULT_SUBSCRIPTIONS_PATH): Subscripti
   const blocks = raw.subscription;
   if (blocks === undefined) return [];
   if (!Array.isArray(blocks)) throw new SubscriptionConfigError(`${path}: [[subscription]] must be an array of tables`);
-  return blocks.map((block, index) => parseEntry(block, index, path));
+  const entries = blocks.map((block, index) => parseEntry(block, index, path));
+  // One row per provider: a second block would silently lose to the first, so say so instead.
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry.provider)) {
+      throw new SubscriptionConfigError(`${path}: provider "${entry.provider}" appears more than once — one block per provider`);
+    }
+    seen.add(entry.provider);
+  }
+  return entries;
 }
 
 function parseEntry(block: unknown, index: number, path: string): SubscriptionEntry {

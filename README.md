@@ -77,8 +77,11 @@ recurring amount. `renews_day` is a day of month (clamped in short months), `ren
 annual charge forward, and `ends_at` marks a prepaid term that simply runs out — shown as "paid
 through" rather than a renewal.
 
+One row per provider, so a plan that is billed under one provider id gets one block: a Cursor
+subscription charged in euros is still `provider = "cursor"`, with `currency`/`price` overriding
+the dollar list price. Duplicate provider blocks are rejected rather than silently losing one.
 xAI has no programmatic path — its API exposes credits for API keys, not the SuperGrok
-subscription — so it is config-only.
+subscription — so it is config-only if you hold one.
 
 Cursor's access token is read read-only from Cursor's own `state.vscdb`
 (`cursorAuth/accessToken`), sent only to `api2.cursor.sh`, and never logged or written back.

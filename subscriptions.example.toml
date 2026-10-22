@@ -26,12 +26,6 @@ plan = "pro"
 price = 20
 renews_day = 13
 
-[[subscription]]
-provider = "cursor"
-plan = "pro"
-price = 20
-renews_day = 4
-
 # OpenAI via Codex: the plan (Plus/Pro) comes from Codex's own login; price and date do not.
 [[subscription]]
 provider = "codex"
@@ -40,15 +34,18 @@ price = 20
 renews_day = 20
 
 # A regional price with an intro rate: charged 15 now, 30 from the second month on. The page
-# shows both and totals the recurring 30.
+# shows both and totals the recurring 30. One block per provider — provider ids match the cards.
 [[subscription]]
-provider = "xai"
-plan = "supergrok"
+provider = "cursor"
+plan = "pro"
 currency = "EUR"
 price = 15
 price_next = 30
 state = "active"
-renews_day = 14
+renews_day = 4
+
+# xAI / Grok has no adapter (its API exposes API-key credits, not the subscription): add a block
+# like these if you hold SuperGrok.
 
 # Prepaid annual term: no monthly charge, so it is shown as a paid-through date instead.
 [[subscription]]

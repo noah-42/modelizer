@@ -118,6 +118,20 @@ describe("loadSubscriptions", () => {
     expect(() => loadSubscriptions(currency)).toThrow(/3-letter ISO 4217/);
   });
 
+  test("rejects two blocks for the same provider", () => {
+    const path = configFile("dupes.toml", [
+      "[[subscription]]",
+      'provider = "cursor"',
+      "price = 20",
+      "",
+      "[[subscription]]",
+      'provider = "cursor"',
+      "price = 15",
+      "",
+    ].join("\n"));
+    expect(() => loadSubscriptions(path)).toThrow(/provider "cursor" appears more than once/);
+  });
+
   test("rejects a negative price", () => {
     const path = configFile("neg.toml", '[[subscription]]\nprovider = "claude"\nprice = -1\n');
     expect(() => loadSubscriptions(path)).toThrow(/price must be >= 0/);
