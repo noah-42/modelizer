@@ -658,8 +658,9 @@ function ModelTable({ rows, suffix }: { rows: ModelRow[]; suffix: string }) {
 }
 
 /**
- * One provider's card. Collapsed it shows the next refresh of its five-hour window — the figure
- * that decides whether you can keep working — and folds the detail away.
+ * One provider's card. Collapsed it keeps the quota windows that decide whether you can keep
+ * working — the five-hour window and, when the provider has one, the weekly budget — and folds
+ * the usage detail away.
  */
 function ProviderCard({
   provider: p,
@@ -674,7 +675,7 @@ function ProviderCard({
 }) {
   const [open, setOpen] = useState(false);
   const status = statusOf(p);
-  const fiveHour = fiveHourWindows(p);
+  const gateWindows = windowsAboveTheFold(p);
   return (
     <section className="card">
       <div className="card-head">
@@ -704,7 +705,7 @@ function ProviderCard({
         </div>
       </div>
 
-      {fiveHour.map((w) => (
+      {gateWindows.map((w) => (
         <div key={w.label} className="window-reset" title={w.reset_at ?? undefined}>
           <span className="status-dot" />
           <span>
@@ -790,15 +791,23 @@ function ProviderCard({
   );
 }
 
-/** The quota windows that reset every five hours: the ones that gate a coding session. */
-function fiveHourWindows(p: OverviewProvider): UsagePoint[] {
-  return p.points.filter((pt) => pt.day === null && pt.quota_window === "five_hour");
+/**
+ * The windows that gate a working session, tightest first: the five-hour window and the weekly
+ * budget above it. Not every plan has a five-hour window — SpaceX (Cursor) only meters by the
+ * week — so a card with no five-hour window still gets its weekly refresh on the front.
+ */
+const GATE_WINDOWS = ["five_hour", "weekly"] as const;
+
+function windowsAboveTheFold(p: OverviewProvider): UsagePoint[] {
+  return GATE_WINDOWS.flatMap((window) =>
+    p.points.filter((pt) => pt.day === null && pt.quota_window === window),
+  );
 }
 
 /**
- * A five-hour window with nothing spent in it. Providers that only send a reset time while the
- * window is running (ZAI drops `nextResetTime` at 0%) leave us without one, and that is not a
- * missing figure — there is nothing to wait for.
+ * A quota window with nothing spent in it. Providers that only send a reset time while the window
+ * is running (ZAI drops `nextResetTime` at 0%) leave us without one, and that is not a missing
+ * figure — there is nothing to wait for.
  */
 function windowIsIdle(point: UsagePoint): boolean {
   return point.used === 0;
