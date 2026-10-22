@@ -11,14 +11,14 @@ const db = new Database(dbPath);
 db.exec(`
   CREATE TABLE models (
     platform TEXT, model_id TEXT, display_name TEXT, rpd_limit INTEGER,
-    tpd_limit INTEGER, rpm_limit INTEGER, tpm_limit INTEGER, enabled INTEGER
+    tpd_limit INTEGER, rpm_limit INTEGER, tpm_limit INTEGER, monthly_token_budget TEXT, enabled INTEGER
   );
   CREATE TABLE requests (
     platform TEXT, model_id TEXT, status TEXT, input_tokens INTEGER,
     output_tokens INTEGER, created_at TEXT
   );
 `);
-db.query("INSERT INTO models VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("google", "gemini-2.5-flash", "Gemini Flash", 20, 1000000, null, null, 1);
+db.query("INSERT INTO models VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run("google", "gemini-2.5-flash", "Gemini Flash", 20, 1000000, null, null, "~3M", 1);
 db.query("INSERT INTO requests VALUES (?, ?, ?, ?, ?, ?)").run("google", "gemini-2.5-flash", "success", 1200, 800, "2026-10-22T12:00:00Z");
 db.query("INSERT INTO requests VALUES (?, ?, ?, ?, ?, ?)").run("google", "gemini-2.5-flash", "failed", 9000, 9000, "2026-10-22T12:01:00Z");
 db.close();

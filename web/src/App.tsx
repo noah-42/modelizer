@@ -44,6 +44,7 @@ const LABELS: Record<string, string> = {
   monthly: "Monthly token pool",
   "cursor-included-usage": "Included usage (Cursor)",
   "freellmapi-daily-pool": "Daily usage (FreeLLMAPI)",
+  "freellmapi-monthly-estimate": "Estimated monthly capacity (FreeLLMAPI)",
   "token-window": "Token window",
   mcp: "MCP tool calls",
   "coding-window-by-model": "Window usage",
@@ -898,7 +899,7 @@ function ProviderCard({
           <span className="status-dot" />
           <span>
             {friendlyLabel(w.label)}{" "}
-            {w.used !== null ? `${fmtValue(w.used, w.unit)}${w.unit === "tokens" ? " tokens" : ""} used · ` : ""}
+            {quotaUsageText(w)}
             {w.reset_at === null ? (
               <span className="muted">
                 {windowIsIdle(w)
@@ -1008,6 +1009,13 @@ function windowsAboveTheFold(p: OverviewProvider): UsagePoint[] {
  */
 function windowIsIdle(point: UsagePoint): boolean {
   return point.used === 0;
+}
+
+function quotaUsageText(point: UsagePoint): string {
+  const estimate = point.source?.match(/^freellmapi-catalog-estimate:(.+)$/)?.[1];
+  if (estimate !== undefined) return `estimated ${estimate} tokens · ${fmtValue(point.used ?? 0, point.unit)} tokens used · `;
+  if (point.used === null) return "";
+  return `${fmtValue(point.used, point.unit)}${point.unit === "tokens" ? " tokens" : ""} used · `;
 }
 
 /** Per-model usage and spend, folded away behind their own summaries. */

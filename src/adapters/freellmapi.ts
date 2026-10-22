@@ -20,6 +20,7 @@ interface ModelRow {
   tpd_limit: number | null;
   rpm_limit: number | null;
   tpm_limit: number | null;
+  monthly_token_budget: string;
 }
 
 interface UsageRow {
@@ -119,7 +120,7 @@ function readSnapshot(path: string, capturedAt: Date): RawPoll {
   const db = new Database(path, { readonly: true });
   try {
     const models = db.query(`
-      SELECT platform, model_id, display_name, rpd_limit, tpd_limit, rpm_limit, tpm_limit
+      SELECT platform, model_id, display_name, rpd_limit, tpd_limit, rpm_limit, tpm_limit, monthly_token_budget
       FROM models WHERE enabled = 1 ORDER BY platform, model_id LIMIT ${MAX_MODEL_ROWS}
     `).all() as ModelRow[];
     const usage = db.query(`
@@ -150,6 +151,8 @@ function normalizeSnapshot(snapshot: FreeLlmApiSnapshot, capturedAt: string): Us
   const currentDay = capturedAt.slice(0, 10);
   const currentRows = snapshot.usage.filter((row) => row.day === currentDay);
   points.push(dailyAggregatePoint(currentRows, capturedAt, currentDay));
+  const monthlyEstimate = monthlyEstimatePoint(snapshot, capturedAt);
+  if (monthlyEstimate !== null) points.push(monthlyEstimate);
   for (const model of snapshot.models) {
     const modelId = `${model.platform}/${model.model_id}`;
     const currentUsage = snapshot.usage.find((row) => row.day === currentDay && `${row.platform}/${row.model_id}` === modelId);
@@ -158,6 +161,66 @@ function normalizeSnapshot(snapshot: FreeLlmApiSnapshot, capturedAt: string): Us
     }
   }
   return points;
+}
+
+function monthlyEstimatePoint(snapshot: FreeLlmApiSnapshot, capturedAt: string): UsagePoint | null {
+  const ranges = snapshot.models.map((model) => parseBudget(model.monthly_token_budget)).filter(isRange);
+  if (ranges.length === 0) return null;
+  const month = capturedAt.slice(0, 7);
+  const used = snapshot.usage
+    .filter((row) => row.day.startsWith(month))
+    .reduce((total, row) => total + row.tokens_in + row.tokens_out, 0);
+  const minimum = ranges.reduce((total, range) => total + range.minimum, 0);
+  const maximum = ranges.reduce((total, range) => total + range.maximum, 0);
+  const nextMonth = new Date(`${month}-01T00:00:00.000Z`);
+  nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+  return {
+    provider: PROVIDER_ID,
+    kind: "quota",
+    label: "freellmapi-monthly-estimate",
+    model: null,
+    used,
+    limit: minimum,
+    remaining: Math.max(minimum - used, 0),
+    unit: "tokens",
+    window_start: `${month}-01T00:00:00.000Z`,
+    window_end: nextMonth.toISOString(),
+    reset_at: nextMonth.toISOString(),
+    day: null,
+    requests: null,
+    tokens_in: null,
+    tokens_out: null,
+    cost_usd: null,
+    captured_at: capturedAt,
+    source: `freellmapi-catalog-estimate:${formatBudget(minimum)}-${formatBudget(maximum)}`,
+    quota_window: "monthly",
+    stale: false,
+  };
+}
+
+interface BudgetRange {
+  minimum: number;
+  maximum: number;
+}
+
+function parseBudget(value: string): BudgetRange | null {
+  const matches = [...value.matchAll(/(\d+(?:\.\d+)?)\s*([KMB])/gi)];
+  if (matches.length === 0) return null;
+  const values = matches.map((match) => Number(match[1]) * multiplier(match[2]!.toUpperCase()));
+  return { minimum: Math.min(...values), maximum: Math.max(...values) };
+}
+
+function multiplier(unit: string): number {
+  return unit === "B" ? 1_000_000_000 : unit === "M" ? 1_000_000 : 1_000;
+}
+
+function isRange(value: BudgetRange | null): value is BudgetRange {
+  return value !== null;
+}
+
+function formatBudget(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  return `${(value / 1_000_000).toFixed(1)}M`;
 }
 
 function dailyAggregatePoint(rows: UsageRow[], capturedAt: string, day: string): UsagePoint {
