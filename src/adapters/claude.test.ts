@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeAdapter, oauthStatusHint, parseOAuthUsage, readOAuthCredentials, USAGE_UNSUPPORTED_BACKOFF_MS, type ClaudeSummary } from "./claude";
+import { claudeAdapter, oauthStatusHint, OAUTH_BACKOFF_MS, parseOAuthUsage, readOAuthCredentials, USAGE_UNSUPPORTED_BACKOFF_MS, type ClaudeSummary } from "./claude";
 import type { CollectContext, RawPoll } from "./types";
 
 // Timestamps are pinned around a fixed "now" so the 8-day scan window is deterministic.
@@ -25,6 +25,7 @@ function isolated(partial: Record<string, string | undefined> = {}): Record<stri
     MODELIZER_CLAUDE_HOOK_FILE: join(root, "no-hook.json"),
     MODELIZER_CLAUDE_STATUSLINE_FILE: join(root, "no-statusline.json"),
     MODELIZER_CLAUDE_USAGE_STATE: join(root, "no-usage-state.json"),
+    MODELIZER_CLAUDE_OAUTH_STATE: join(root, "no-oauth-state.json"),
     ...partial,
   };
 }
@@ -546,5 +547,162 @@ describe("claude oauth helpers", () => {
     expect(parseOAuthUsage({ limits: [{ kind: "session", percent: 0, resets_at: null }] })).toBeNull();
     expect(parseOAuthUsage(null)).toBeNull();
     expect(parseOAuthUsage({})).toBeNull();
+  });
+});
+
+describe("claude account-wide usage (CLAUDE_OAUTH_USAGE)", () => {
+  const OAUTH_BODY = {
+    five_hour: { utilization: 51, resets_at: "2026-10-22T15:29:59.894203+00:00" },
+    seven_day: { utilization: 81, resets_at: "2026-10-25T17:59:59.894225+00:00" },
+  };
+
+  function fakeFetch(body: unknown, status: number, calls: string[]): typeof fetch {
+    return (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  }
+
+  function oauthEnv(dir: string, extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
+    return isolated({ CLAUDE_PROJECTS_DIR: dir, CLAUDE_OAUTH_USAGE: "1", CLAUDE_OAUTH_TOKEN: "test-token", CLAUDE_USAGE: "0", ...extra });
+  }
+
+  function oneTurn(dirName: string): string {
+    const dir = fixtureDir(dirName);
+    writeSession(dir, "s.jsonl", [turn({ ts: "2026-10-06T18:00:00.000Z", msgId: `${dirName}-1`, input: 10, output: 5 })]);
+    return dir;
+  }
+
+  test("stays off by default, so nothing leaves the machine", async () => {
+    const dir = oneTurn("oauth-off");
+    const calls: string[] = [];
+    const polls = await claudeAdapter.collect({
+      fetchFn: fakeFetch(OAUTH_BODY, 200, calls),
+      env: isolated({ CLAUDE_PROJECTS_DIR: dir, CLAUDE_OAUTH_TOKEN: "test-token", CLAUDE_USAGE: "0" }),
+      now: NOW,
+      log: () => {},
+    });
+    expect(polls.map((p) => p.endpoint)).toEqual(["projects-jsonl"]);
+    expect(calls).toEqual([]);
+  });
+
+  test("supplies the account-wide 5h and weekly percentages", async () => {
+    const dir = oneTurn("oauth-on");
+    const polls = await claudeAdapter.collect({
+      fetchFn: fakeFetch(OAUTH_BODY, 200, []),
+      env: oauthEnv(dir),
+      now: NOW,
+      log: () => {},
+    });
+    expect(polls.map((p) => p.endpoint)).toContain("oauth-usage");
+
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({
+      used: 51,
+      used_percent: 51,
+      remaining: 49,
+      quota_window: "five_hour",
+      source: "oauth",
+      stale: false,
+      reset_at: "2026-10-22T15:29:59.894Z",
+    });
+    expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({
+      used: 81,
+      quota_window: "weekly",
+      source: "oauth",
+      reset_at: "2026-10-25T17:59:59.894Z",
+    });
+  });
+
+  test("wins over a fresh status line snapshot", async () => {
+    const dir = oneTurn("oauth-beats-statusline");
+    const statusFile = join(root, "oauth-statusline.json");
+    writeFileSync(statusFile, JSON.stringify({
+      recordedAt: "2026-10-06T19:55:00.000Z",
+      rate_limits: {
+        five_hour: { used_percentage: 12, resets_at: "2026-10-06T23:30:00.000Z" },
+        seven_day: { used_percentage: 4, resets_at: "2026-10-13T00:00:00.000Z" },
+      },
+    }));
+    const polls = await claudeAdapter.collect({
+      fetchFn: fakeFetch(OAUTH_BODY, 200, []),
+      env: oauthEnv(dir, { MODELIZER_CLAUDE_STATUSLINE_FILE: statusFile }),
+      now: NOW,
+      log: () => {},
+    });
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({ used: 51, source: "oauth" });
+    expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({ used: 81, source: "oauth" });
+  });
+
+  test("a rejected token is shown as stale and is not retried for an hour", async () => {
+    const dir = oneTurn("oauth-401");
+    const state = join(root, "oauth-401-state.json");
+    const calls: string[] = [];
+    const env = oauthEnv(dir, { MODELIZER_CLAUDE_OAUTH_STATE: state });
+    const fetchFn = fakeFetch({ error: "unauthorized" }, 401, calls);
+
+    const polls = await claudeAdapter.collect({ fetchFn, env, now: NOW, log: () => {} });
+    expect(calls).toHaveLength(1);
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    expect(points.find((p) => p.label === "claude-5h-percent")).toMatchObject({ used: null, source: "oauth", stale: true });
+    expect(points.find((p) => p.label === "claude-weekly-percent")).toMatchObject({ stale: true, source: "oauth" });
+
+    const saved = JSON.parse(readFileSync(state, "utf8")) as { until: string; reason: string };
+    expect(saved.reason).toBe("http-401");
+    expect(Date.parse(saved.until) - NOW.getTime()).toBe(OAUTH_BACKOFF_MS);
+
+    await claudeAdapter.collect({ fetchFn, env, now: new Date(NOW.getTime() + 60_000), log: () => {} });
+    expect(calls).toHaveLength(1);
+
+    await claudeAdapter.collect({ fetchFn, env, now: new Date(NOW.getTime() + OAUTH_BACKOFF_MS + 1_000), log: () => {} });
+    expect(calls).toHaveLength(2);
+  });
+
+  test("skips the request entirely when there is no Claude Code token", async () => {
+    const dir = oneTurn("oauth-no-token");
+    const calls: string[] = [];
+    const polls = await claudeAdapter.collect({
+      fetchFn: fakeFetch(OAUTH_BODY, 200, calls),
+      env: oauthEnv(dir, { CLAUDE_OAUTH_TOKEN: "" }),
+      now: NOW,
+      log: () => {},
+    });
+    expect(polls.map((p) => p.endpoint)).toEqual(["projects-jsonl"]);
+    expect(calls).toEqual([]);
+  });
+
+  test("statusHints explain how to turn account-wide usage on", () => {
+    expect(claudeAdapter.statusHints?.({})?.[0]?.state).toContain("CLAUDE_OAUTH_USAGE=1");
+    const on = claudeAdapter.statusHints?.({ CLAUDE_OAUTH_USAGE: "1", CLAUDE_OAUTH_TOKEN: "t" });
+    expect(on).toEqual([]);
+  });
+});
+
+describe("claude API-equivalent cost", () => {
+  test("emits a priced spend row per day and model, and none for unpriced models", async () => {
+    const dir = fixtureDir("cost");
+    writeSession(dir, "s.jsonl", [
+      turn({ ts: "2026-10-06T18:00:00.000Z", msgId: "cost-1", model: "claude-opus-5-5", input: 1_000_000 }),
+      turn({ ts: "2026-10-06T18:05:00.000Z", msgId: "cost-2", model: "<synthetic>" }),
+    ]);
+    const polls = await claudeAdapter.collect(ctx(dir));
+    const summary = polls.at(0)?.json as ClaudeSummary | undefined;
+    const opus = summary?.daily.find((d) => d.model === "claude-opus-5-5");
+    expect(opus?.costUsd).toBe(4);
+    const synthetic = summary?.daily.find((d) => d.model === "<synthetic>");
+    expect(synthetic?.costUsd).toBeNull();
+
+    const points = claudeAdapter.normalize(polls, "2026-10-06T20:00:01.000Z");
+    const spend = points.filter((p) => p.label === "model-spend");
+    expect(spend).toHaveLength(1);
+    expect(spend[0]).toMatchObject({
+      kind: "usage",
+      unit: "usd",
+      model: "claude-opus-5-5",
+      day: "2026-10-06",
+      cost_usd: 4,
+      used: null,
+    });
   });
 });

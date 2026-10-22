@@ -24,6 +24,7 @@ src/config.ts         modelizer.toml
 src/secrets.ts        env, then macOS keychain
 src/notify.ts         optional reset webhook
 src/windows.ts        overview window shape
+src/pricing.ts        API-equivalent list prices for local usage
 src/adapters/         one provider per file; index.ts is display order
 web/                  Vite + React
 scripts/              mocks and the Claude StopFailure hook
@@ -39,6 +40,7 @@ plans/                MOD plans (see plans/INDEX.md)
 | Overview windows | `src/windows.ts`, `src/api.ts` |
 | Codex rate limits | `src/adapters/codex-app-server.ts`, `codex-limits.ts`, `codex.ts` |
 | Claude resets | `src/adapters/claude.ts`, `src/usage-text.ts`, `scripts/claude-statusline.ts`, `scripts/claude-rate-limit-hook.ts` |
+| Claude cost / list prices | `src/pricing.ts`, `src/pricing/anthropic.json`, `scripts/refresh-pricing.ts` |
 | Z.AI limits | `src/adapters/zai.ts` |
 | Reset notices / ntfy | `src/notify.ts` |
 | Schema | `src/db.ts` |
@@ -55,7 +57,9 @@ plans/                MOD plans (see plans/INDEX.md)
 - `ADAPTERS` array order is dashboard order.
 - Set `quota_window` only on authoritative quota windows. Transcript token estimates leave it empty.
 - Stability tiers: **T1** official documented API (OpenRouter). **T2** undocumented community endpoints (Z.AI; Cursor and Copilot when added) — isolate failures, archive raw bodies, show staleness. **T3** local files and CLIs (Claude transcripts, then status line, `claude -p /usage --output-format json`, and the StopFailure hook; Codex `account/rateLimits/read` with session logs as fallback). **T4** no programmatic path (placeholder cards).
-- Claude `/usage` runs with stdin closed and a 5s timeout. "Unknown skill" or empty output is stale and is not retried for 6 hours. Do not let that command hang the scheduler.
+- Claude windows resolve in this order: account-wide OAuth usage (only when `CLAUDE_OAUTH_USAGE=1`), statusLine snapshot, `claude -p /usage`, StopFailure hook. The OAuth call is read-only — never refresh or write the token, because Claude Code and CodexBar hold the same keychain item and a second refresher logs one of them out. 401/403/429/odd body backs off for an hour; never retry it on every tick.
+- Claude `/usage` runs with stdin closed and a 5s timeout. Any failure is stale and is not retried for 6 hours. Do not let that command hang the scheduler. It is a dead end on Claude Code 2.1.307+ (returns a `local_command` result), so do not treat its success as window data.
+- Cost is API-equivalent only: list prices from `src/pricing/anthropic.json` (refresh with `bun run scripts/refresh-pricing.ts`), never a guessed invoice. Unpriced models emit no `model-spend` row rather than a zero.
 - Codex windows follow length (300 minutes = 5-hour, 10080 = weekly), not the primary/secondary slot. Do not invent a reset from the window length.
 - Secrets resolve from the environment, then the macOS keychain service `modelizer`. They stay out of `modelizer.toml`, the database, logs, URLs, and API responses. `.env` is gitignored; if used, `chmod 600`.
 - Egress is the adapter's documented endpoints only, key in the `Authorization` header, TLS. Do not call undocumented OAuth usage endpoints. Do not scrape claude.ai or chatgpt.com.
@@ -66,7 +70,7 @@ plans/                MOD plans (see plans/INDEX.md)
 
 ## ANTI-PATTERNS
 
-- Calling `api.anthropic.com/api/oauth/usage`, or scraping claude.ai / chatgpt.com.
+- Refreshing, writing, or logging the Claude OAuth token; calling the usage endpoint unless `CLAUDE_OAUTH_USAGE=1`; scraping claude.ai / chatgpt.com.
 - Putting a key, webhook URL, or topic in config, the database, logs, or the UI.
 - Hardcoding an ntfy topic name.
 - Guessing `resetsAt` from a window duration.

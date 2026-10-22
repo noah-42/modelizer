@@ -40,6 +40,7 @@ const LABELS: Record<string, string> = {
   mcp: "MCP tool calls",
   "coding-window-by-model": "Window usage",
   "model-daily": "Daily usage",
+  "model-spend": "Daily spend (API-equivalent)",
   "payg-balance": "PAYG balance",
   "key-spend-limit": "Key spend limit",
   "key-lifetime-spend": "Key lifetime spend",

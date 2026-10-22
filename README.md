@@ -118,12 +118,13 @@ Each provider is an adapter (`src/adapters/`) with a stability tier:
 - **T1** official documented APIs (OpenRouter today; Anthropic/OpenAI admin APIs planned)
 - **T2** undocumented endpoints the community relies on (Z.AI, personal Cursor, personal Copilot).
   These can break; failures are isolated per provider, raw responses are archived, and the UI
-  shows staleness instead of hiding it. Modelizer does not call undocumented OAuth usage
-  endpoints and does not scrape claude.ai or chatgpt.com.
+  shows staleness instead of hiding it. The one opt-in exception is Claude's account-wide usage
+  endpoint (`CLAUDE_OAUTH_USAGE=1`, read-only, token never refreshed) — it is the only way to see
+  usage outside this machine. Modelizer does not scrape claude.ai or chatgpt.com.
 - **T3** local files and local CLIs. Claude Code transcripts under `~/.claude/projects` supply
-  token counts. Quota windows prefer the statusLine file, then `claude -p /usage --output-format json`
-  (stdin closed, 5s timeout; "Unknown skill" or empty output is stale and skipped for 6 hours),
-  then a StopFailure hook. Codex prefers the documented
+  token counts. Quota windows prefer the opt-in account-wide usage endpoint, then the statusLine
+  file, then `claude -p /usage --output-format json` (stdin closed, 5s timeout; failure is stale
+  and skipped for 6 hours), then a StopFailure hook. Codex prefers the documented
   `codex app-server` method `account/rateLimits/read` (no model turn) and falls back to
   `token_count` rate-limit snapshots in `~/.codex/sessions`. Windows are identified by length
   (300 minutes = 5h, 10080 = weekly), not by primary/secondary slot.
@@ -131,9 +132,16 @@ Each provider is an adapter (`src/adapters/`) with a stability tier:
 
 ### Claude Code quota windows
 
-Transcripts do not include a reset time. Modelizer reads three local sources, in order:
+Transcripts do not include a reset time. Modelizer reads four sources, in order:
 
-1. **Status line** (preferred). `scripts/claude-statusline.ts` reads the JSON Claude Code passes to a statusLine command and, when `rate_limits` is present, writes `~/.modelizer/claude-statusline.json`. Those fields (`five_hour` / `seven_day` `used_percentage` and `resets_at`) shipped in Claude Code 2.1.80. Older builds omit them; the script still exits 0 and modelizer ignores the file. A snapshot older than 6 hours is ignored. Add this to `~/.claude/settings.json`. If you already have a statusLine command, put it after `--` so this script records the limits and then runs yours with the same JSON on stdin:
+0. **Account-wide usage (opt-in).** Set `CLAUDE_OAUTH_USAGE=1` to call Anthropic's usage endpoint
+   with the Claude Code login token from the macOS keychain. It returns the real `five_hour` and
+   `seven_day` percentages and reset times for the whole account, so it also covers claude.ai and
+   other machines — the same source CodexBar uses. Read-only: the token is never refreshed or
+   written back (two refreshers would race and log Claude Code out). A 401, 403, 429 or unexpected
+   body backs off for an hour. Unset, nothing leaves the machine.
+
+1. **Status line.** `scripts/claude-statusline.ts` reads the JSON Claude Code passes to a statusLine command and, when `rate_limits` is present, writes `~/.modelizer/claude-statusline.json`. Those fields (`five_hour` / `seven_day` `used_percentage` and `resets_at`) shipped in Claude Code 2.1.80. Older builds omit them; the script still exits 0 and modelizer ignores the file. A snapshot older than 6 hours is ignored. Add this to `~/.claude/settings.json`. If you already have a statusLine command, put it after `--` so this script records the limits and then runs yours with the same JSON on stdin:
 
 ```json
 {
@@ -147,7 +155,7 @@ Transcripts do not include a reset time. Modelizer reads three local sources, in
 
 Drop the `-- …` part when you have no existing command. Stdout is then a short line such as `5h 23% · 7d 41%`.
 
-2. **`claude -p /usage --output-format json`**. Stdin is closed and the process is killed after 5 seconds, so it cannot hang the scheduler. On Claude Code 2.1.7 this returns `Unknown skill: usage` at zero cost. That result, or empty output, marks both windows stale and is not retried for 6 hours. A fixture of that response is `fixtures/claude-unknown-skill.json`. Set `CLAUDE_USAGE=0` to skip the command.
+2. **`claude -p /usage --output-format json`**. Stdin is closed and the process is killed after 5 seconds, so it cannot hang the scheduler. On Claude Code 2.1.307+ it answers with a `local_command` result (`Usage: 0 input, 0 output`) and no window data at all, so it is a dead end on current builds; on 2.1.7 it returned `Unknown skill: usage`. Either way the failure marks both windows stale and is not retried for 6 hours. Set `CLAUDE_USAGE=0` to skip the command.
 
 3. **StopFailure hook.** When a turn dies on a rate limit, the hook writes the message's reset time to `~/.modelizer/claude-rate-limit.json` (override with `MODELIZER_CLAUDE_HOOK_FILE`). That exact instant overrides the matching window from the sources above. Add this to `~/.claude/settings.json`:
 
@@ -168,6 +176,15 @@ Drop the `-- …` part when you have no existing command. Stdout is then a short
 
 Set `CLAUDE_USAGE=0` to skip the `/usage` command, or `CODEX_APP_SERVER=0` to skip the Codex
 app-server read. Both fall back without failing the other providers.
+
+### Claude cost (API-equivalent)
+
+A subscription has no per-token bill, so modelizer prices the local tokens at list rates and shows
+the result as per-model spend ("API-equivalent"). Prices live in `src/pricing/anthropic.json`
+(USD per million tokens for input, output, cache read and cache write) and are checked in, so a
+poll never depends on a third-party host. They come from models.dev — the table CodexBar uses —
+and `bun run scripts/refresh-pricing.ts` regenerates the file. Unknown models (for example the
+`<synthetic>` turns Claude Code logs for local errors) simply carry no spend row.
 
 Plans live in [`plans/`](plans/) — see [MOD001](plans/2026-10-oct-03_MOD001_llm-usage-dashboard.md)
 for the roadmap (phases: walking skeleton → regulars → occasionals → polish/deploy).

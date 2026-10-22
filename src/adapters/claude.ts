@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { bundledPricing, estimateCost, type PricingTable } from "../pricing";
 import { runCommand } from "../proc";
 import { parseUsageText, usageUnsupportedReason, windowsFromRateLimits, type HookRecord, type ParsedUsageWindow } from "../usage-text";
-import { NormalizeError } from "./types";
+import { fetchPoll, NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsagePoint } from "./types";
 
 /**
@@ -25,14 +26,24 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, StatusNote, UsageP
  * block. Verified 2026-10-06 against Claude Code's /usage: the block anchored at 21:52 (first
  * response) while Anthropic's window reset matched 21:40 (the prompt) — so blocks snap to the
  * latest user-entry timestamp preceding their first assistant turn.
- * Weekly limits and real reset times are not in the transcripts. Preferred source
- * is the optional statusLine script (scripts/claude-statusline.ts), which records
- * `rate_limits` when Claude Code sends them (v2.1.80+). Next is
- * `claude -p /usage --output-format json` (stdin closed, short timeout). On
- * Claude Code 2.1.7 that command returns "Unknown skill: usage"; that and empty
- * output are marked stale and not retried for several hours. A StopFailure hook
- * can still override the reset time. The undocumented OAuth usage endpoint is
- * not called — it would copy a Claude.ai login token.
+ * Weekly limits and real reset times are not in the transcripts. Preferred source is the
+ * account-wide OAuth usage endpoint (`CLAUDE_OAUTH_USAGE=1`, read-only — see below), then the
+ * optional statusLine script (scripts/claude-statusline.ts), which records `rate_limits` when
+ * Claude Code sends them (v2.1.80+). `claude -p /usage` is tried after those with stdin closed
+ * and a short timeout; it is a dead end on Claude Code 2.1.307+, which answers with a
+ * `local_command` result ("Usage: 0 input, 0 output") instead of window percentages, so the
+ * failure is cached and not retried for several hours. A StopFailure hook can still override
+ * the reset time of one window.
+ *
+ * OAuth usage (opt-in, `CLAUDE_OAUTH_USAGE=1`): GET https://api.anthropic.com/api/oauth/usage
+ * with the Claude Code login token from the macOS keychain. Read-only: the token is never
+ * refreshed or written back, because two refreshers (modelizer and CodexBar, or Claude Code
+ * itself) would race and log the CLI out. 401/403/429 and unexpected shapes back off for an
+ * hour instead of hammering the endpoint. Without the flag, nothing leaves the machine.
+ *
+ * Cost is API-equivalent: local tokens priced at list rates from src/pricing/anthropic.json,
+ * emitted as `model-spend` points. A subscription has no per-token bill, so this is a burn
+ * metric, not an invoice.
  * Everything is aggregate-only: no message text, session ids, or project paths leave collect().
  */
 
@@ -41,10 +52,15 @@ const BLOCK_MS = 5 * 3_600_000;
 const SCAN_MS = 8 * 86_400_000;
 
 /**
- * OAuth credential helpers are retained for diagnostics only. collect() does not call
- * api.anthropic.com/api/oauth/usage — that endpoint is undocumented and needs a copied
- * login token. Live windows come from the status line file, then the usage command, then the hook file.
+ * OAuth usage is opt-in (`CLAUDE_OAUTH_USAGE=1`): it needs the Claude Code login token and
+ * talks to Anthropic's undocumented usage endpoint. Read-only by design — refreshing here
+ * would race Claude Code and CodexBar and log one of them out.
  */
+export const OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+export const OAUTH_USAGE_ENDPOINT = "oauth-usage";
+/** 401/403/429 or an unparsable body: stop calling for an hour instead of every tick. */
+export const OAUTH_BACKOFF_MS = 3_600_000;
+const OAUTH_HEADERS = { "anthropic-version": "2023-06-01", accept: "application/json" } as const;
 
 export interface OAuthCredentials {
   token: string | null;
@@ -127,12 +143,20 @@ export function oauthStatusHint(creds: OAuthCredentials, nowMs: number): StatusN
   return [];
 }
 
-export function parseOAuthUsage(
-  json: unknown,
-): { fiveHour: { percent: number; resetsAt: string | null } | null; weekly: { percent: number; resetsAt: string | null } | null } | null {
+export interface OAuthWindow {
+  percent: number;
+  resetsAt: string | null;
+}
+
+export interface OAuthUsage {
+  fiveHour: OAuthWindow | null;
+  weekly: OAuthWindow | null;
+}
+
+export function parseOAuthUsage(json: unknown): OAuthUsage | null {
   if (json === null || typeof json !== "object") return null;
   const root = json as Record<string, unknown>;
-  const bucket = (v: unknown): { percent: number; resetsAt: string | null } | null => {
+  const bucket = (v: unknown): OAuthWindow | null => {
     if (v === null || typeof v !== "object") return null;
     const b = v as Record<string, unknown>;
     if (typeof b.utilization !== "number") return null;
@@ -169,6 +193,8 @@ export interface ClaudeDailySummary {
   inTokens: number;
   outTokens: number;
   requests: number;
+  /** API-equivalent USD for the day at list prices; null when the model has no price row. */
+  costUsd: number | null;
 }
 
 export interface ClaudeSummary {
@@ -191,8 +217,10 @@ interface UsageEvent {
   ts: number;
   model: string;
   used: number;
-  inTokens: number;
-  outTokens: number;
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
 }
 
 export function projectsDir(env: Record<string, string | undefined>): string {
@@ -271,8 +299,10 @@ function collectEvents(
         ts,
         model: typeof msg.model === "string" && msg.model !== "" ? msg.model : "unknown",
         used: input + cacheWrite + cacheRead + output,
-        inTokens: input + cacheWrite + cacheRead,
-        outTokens: output,
+        input,
+        cacheWrite,
+        cacheRead,
+        output,
       });
     }
   }
@@ -310,8 +340,53 @@ function foldBlocks(events: UsageEvent[], promptTs: number[]): ClaudeBlockSummar
   return blocks.map(({ anchorMs, ...b }) => b);
 }
 
+interface DailyTotals {
+  day: string;
+  model: string;
+  used: number;
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+  requests: number;
+}
+
+/** One row per (UTC day, model). Raw token kinds are kept apart so pricing stays exact. */
+function accumulateDaily(events: UsageEvent[]): Map<string, DailyTotals> {
+  const daily = new Map<string, DailyTotals>();
+  for (const e of events) {
+    const day = new Date(e.ts).toISOString().slice(0, 10);
+    const key = `${day}|${e.model}`;
+    const row = daily.get(key) ?? { day, model: e.model, used: 0, input: 0, cacheWrite: 0, cacheRead: 0, output: 0, requests: 0 };
+    row.used += e.used;
+    row.input += e.input;
+    row.cacheWrite += e.cacheWrite;
+    row.cacheRead += e.cacheRead;
+    row.output += e.output;
+    row.requests += 1;
+    daily.set(key, row);
+  }
+  return daily;
+}
+
+function priceDaily(totals: Map<string, DailyTotals>, pricing: PricingTable): ClaudeDailySummary[] {
+  return [...totals.values()].map((t) => ({
+    day: t.day,
+    model: t.model,
+    used: t.used,
+    inTokens: t.input + t.cacheWrite + t.cacheRead,
+    outTokens: t.output,
+    requests: t.requests,
+    costUsd: estimateCost(pricing, t.model, {
+      input: t.input,
+      cacheWrite: t.cacheWrite,
+      cacheRead: t.cacheRead,
+      output: t.output,
+    }),
+  }));
+}
+
 function summarize(
-  dir: string,
   files: string[],
   events: UsageEvent[],
   promptTs: number[],
@@ -319,18 +394,9 @@ function summarize(
   unparsable: number,
   sessionTokenLimit: number | null,
   sessionTurnLimit: number | null,
+  pricing: PricingTable,
 ): ClaudeSummary {
-  const daily = new Map<string, ClaudeDailySummary>();
-  for (const e of events) {
-    const day = new Date(e.ts).toISOString().slice(0, 10);
-    const key = `${day}|${e.model}`;
-    const row = daily.get(key) ?? { day, model: e.model, used: 0, inTokens: 0, outTokens: 0, requests: 0 };
-    row.used += e.used;
-    row.inTokens += e.inTokens;
-    row.outTokens += e.outTokens;
-    row.requests += 1;
-    daily.set(key, row);
-  }
+  const daily = priceDaily(accumulateDaily(events), pricing);
   const first = events[0];
   const last = events.at(-1);
   return {
@@ -341,7 +407,7 @@ function summarize(
     firstTimestamp: first ? new Date(first.ts).toISOString() : null,
     lastTimestamp: last ? new Date(last.ts).toISOString() : null,
     blocks: foldBlocks(events, promptTs).slice(-3),
-    daily: [...daily.values()].sort((a, b) => (a.day === b.day ? (a.model < b.model ? -1 : 1) : a.day < b.day ? 1 : -1)),
+    daily: daily.sort((a, b) => (a.day === b.day ? (a.model < b.model ? -1 : 1) : a.day < b.day ? 1 : -1)),
     sessionTokenLimit,
     sessionTurnLimit,
   };
@@ -365,22 +431,40 @@ export const claudeAdapter: Adapter = {
 
   notes: [
     {
-      title: "Claude Pro/Max — local transcripts, no API",
-      text: "Anthropic has no usage API for personal subscriptions. This card parses the session logs Claude Code writes under ~/.claude/projects — the same source ccusage reads — so nothing is sent anywhere and no key is needed.",
+      title: "Claude Pro/Max — transcripts plus an opt-in account-wide check",
+      text: "Anthropic has no public usage API for personal subscriptions. Token totals come from the session logs Claude Code writes under ~/.claude/projects — the same source ccusage reads — so they only cover this machine. With CLAUDE_OAUTH_USAGE=1 the card also asks Anthropic's own usage endpoint for the account-wide 5h/weekly percentages, which is the only view that includes claude.ai and other devices. Otherwise nothing leaves the machine.",
     },
     {
       title: "5-hour and weekly windows",
-      text: "Token totals come from local transcripts. Session (5h) and weekly percentages come first from the optional statusLine script (scripts/claude-statusline.ts; rate_limits on Claude Code 2.1.80+). Otherwise `claude -p /usage --output-format json` is tried with stdin closed and a short timeout. \"Unknown skill\" or empty output is marked stale and not retried for 6 hours. A StopFailure hook can still record an exact reset. Set CLAUDE_USAGE=0 to skip the command.",
+      text: "Percentages come from the account-wide usage endpoint when CLAUDE_OAUTH_USAGE=1, else from the optional statusLine script (scripts/claude-statusline.ts; rate_limits on Claude Code 2.1.80+), else from `claude -p /usage --output-format json` with stdin closed and a short timeout. That command is a dead end on Claude Code 2.1.307+, where it answers with a local_command result and no window data, so its failure is cached for 6 hours. A StopFailure hook can still record an exact reset. Set CLAUDE_USAGE=0 to skip the command entirely.",
+    },
+    {
+      title: "Cost is API-equivalent, not a bill",
+      text: "A subscription is not billed per token, so per-model spend is what these tokens would cost at list prices (input, output, cache read, cache write) from the checked-in table in src/pricing/anthropic.json — the same number CodexBar shows. Treat it as a burn metric for comparing days and models. Refresh prices with `bun run scripts/refresh-pricing.ts` when a new model lands.",
     },
     {
       title: "Scope & counting",
-      text: "Only sessions run on this machine are visible. Totals count input, output, and cached tokens (cache reads dominate long sessions); sub-agent turns are included. Claude Code prunes old transcripts, but modelizer keeps the daily history it has already recorded.",
+      text: "Only sessions run on this machine land in the token totals. Totals count input, output, and cached tokens (cache reads dominate long sessions); sub-agent turns are included. Claude Code prunes old transcripts, but modelizer keeps the daily history it has already recorded.",
     },
     {
       title: "How much is left? Calibrate the budgets",
       text: "Anthropic doesn't publish plan limits, so 'left' is a personal calibration: run /usage inside Claude Code (the authoritative view), note its % against the tokens/requests here, and set CLAUDE_SESSION_TOKENS / CLAUDE_SESSION_TURNS in .env to your effective full-window budgets. Calibrated for Opus 5.5 on medium: ~47M tokens ≈ 210 requests per 5h window (2026-10-06). Requests count API turns including tool loops; different models or effort levels drain budgets at different rates.",
     },
   ] satisfies ProviderNote[],
+
+  statusHints(env) {
+    if (env.CLAUDE_OAUTH_USAGE !== "1") {
+      return [
+        {
+          label: "hint",
+          state: "account-wide usage is off — set CLAUDE_OAUTH_USAGE=1 for Anthropic's own 5h/weekly %",
+          tone: "muted",
+        },
+      ];
+    }
+    const nowMs = Date.now();
+    return oauthStatusHint(readOAuthCredentials(env, { nowMs }), nowMs);
+  },
 
   async collect(ctx: CollectContext): Promise<RawPoll[]> {
     const dir = projectsDir(ctx.env);
@@ -393,7 +477,6 @@ export const claudeAdapter: Adapter = {
     const tokens = Number(ctx.env.CLAUDE_SESSION_TOKENS ?? "");
     const turns = Number(ctx.env.CLAUDE_SESSION_TURNS ?? "");
     const summary = summarize(
-      dir,
       files,
       events,
       promptTs,
@@ -401,6 +484,7 @@ export const claudeAdapter: Adapter = {
       unparsable,
       Number.isFinite(tokens) && tokens > 0 ? tokens : null,
       Number.isFinite(turns) && turns > 0 ? turns : null,
+      bundledPricing(),
     );
     const body = JSON.stringify(summary);
     const polls: RawPoll[] = [
@@ -414,6 +498,8 @@ export const claudeAdapter: Adapter = {
       },
     ];
 
+    const oauth = await readOAuthUsagePoll(ctx);
+    if (oauth) polls.push(oauth);
     const statusline = readStatuslinePoll(ctx);
     if (statusline) polls.push(statusline);
     const usage = await readUsageCommand(ctx);
@@ -485,6 +571,14 @@ export const claudeAdapter: Adapter = {
         tokens_out: d.outTokens,
         requests: d.requests,
       }));
+      // API-equivalent list-price cost for the same day; unknown models stay unpriced.
+      if (typeof d.costUsd === "number" && Number.isFinite(d.costUsd)) {
+        points.push(blankPoint(capturedAt, "model-spend", "usage", "usd", {
+          model: d.model,
+          day: d.day,
+          cost_usd: d.costUsd,
+        }));
+      }
     }
     if (points.length === 0) {
       throw new NormalizeError("claude: no assistant usage found in ~/.claude/projects (last 8 days)");
@@ -522,7 +616,7 @@ function envPath(custom: string | undefined, fallback: string): string {
 
 async function readUsageCommand(ctx: CollectContext): Promise<RawPoll | null> {
   if (ctx.env.CLAUDE_USAGE === "0") return null;
-  if (usageBackoffActive(ctx.env, ctx.now)) return null;
+  if (backoffActive(usageStatePath(ctx.env), ctx.now)) return null;
   const file = ctx.env.CLAUDE_USAGE_FILE?.trim();
   if (file) {
     try {
@@ -573,8 +667,7 @@ function finishUsage(
   return usagePoll(url, text, ctx.now);
 }
 
-function usageBackoffActive(env: Record<string, string | undefined>, now: Date): boolean {
-  const path = usageStatePath(env);
+function backoffActive(path: string, now: Date): boolean {
   if (!existsSync(path)) return false;
   try {
     const json = JSON.parse(readFileSync(path, "utf8")) as { until?: unknown };
@@ -585,12 +678,12 @@ function usageBackoffActive(env: Record<string, string | undefined>, now: Date):
   }
 }
 
-function rememberUsageUnsupported(ctx: CollectContext, reason: string): void {
-  const path = usageStatePath(ctx.env);
+/** Record "do not ask again until X" next to the adapter so a restart does not reset it. */
+function rememberBackoff(ctx: CollectContext, path: string, reason: string, untilMs: number): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const body = JSON.stringify({
-      until: new Date(ctx.now.getTime() + USAGE_UNSUPPORTED_BACKOFF_MS).toISOString(),
+      until: new Date(untilMs).toISOString(),
       reason,
       detectedAt: ctx.now.toISOString(),
     });
@@ -598,8 +691,85 @@ function rememberUsageUnsupported(ctx: CollectContext, reason: string): void {
     writeFileSync(tmp, `${body}\n`);
     renameSync(tmp, path);
   } catch (err) {
-    ctx.log(`claude: could not record usage backoff (${(err as Error).message})`);
+    ctx.log(`claude: could not record backoff for ${path} (${(err as Error).message})`);
   }
+}
+
+function rememberUsageUnsupported(ctx: CollectContext, reason: string): void {
+  rememberBackoff(ctx, usageStatePath(ctx.env), reason, ctx.now.getTime() + USAGE_UNSUPPORTED_BACKOFF_MS);
+}
+
+export function oauthStatePath(env: Record<string, string | undefined>): string {
+  return envPath(env.MODELIZER_CLAUDE_OAUTH_STATE, join(homedir(), ".modelizer", "claude-oauth-state.json"));
+}
+
+function oauthWindows(usage: OAuthUsage): ParsedUsageWindow[] {
+  const out: ParsedUsageWindow[] = [];
+  for (const [window, bucket] of [["five_hour", usage.fiveHour], ["weekly", usage.weekly]] as const) {
+    if (bucket === null) continue;
+    out.push({ window, usedPercent: bucket.percent, resetsAt: isoOrNull(bucket.resetsAt) });
+  }
+  return out;
+}
+
+/** The endpoint sends `+00:00` with microseconds; store one canonical ISO form. */
+function isoOrNull(value: string | null): string | null {
+  if (value === null) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+async function requestOAuthUsage(ctx: CollectContext, token: string): Promise<RawPoll> {
+  try {
+    return await fetchPoll(ctx, {
+      endpoint: OAUTH_USAGE_ENDPOINT,
+      url: OAUTH_USAGE_URL,
+      headers: { ...OAUTH_HEADERS, authorization: `Bearer ${token}` },
+      optional: true,
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    ctx.log(`claude: oauth usage request failed (${message})`);
+    return {
+      endpoint: OAUTH_USAGE_ENDPOINT,
+      url: OAUTH_USAGE_URL,
+      status: 0,
+      body: message,
+      json: { stale: true, windows: [], error: message },
+      headers: {},
+      optional: true,
+    };
+  }
+}
+
+/**
+ * Account-wide 5h/weekly percentages from Anthropic's usage endpoint. Off unless
+ * `CLAUDE_OAUTH_USAGE=1`. Never refreshes the token; failures back off for an hour.
+ */
+async function readOAuthUsagePoll(ctx: CollectContext): Promise<RawPoll | null> {
+  if (ctx.env.CLAUDE_OAUTH_USAGE !== "1") return null;
+  const statePath = oauthStatePath(ctx.env);
+  if (backoffActive(statePath, ctx.now)) return null;
+
+  const creds = readOAuthCredentials(ctx.env, { nowMs: ctx.now.getTime() });
+  if (creds.token === null) {
+    ctx.log("claude: CLAUDE_OAUTH_USAGE=1 but no Claude Code token; skipping account-wide usage");
+    return null;
+  }
+  if (creds.expiresAt !== null && creds.expiresAt <= ctx.now.getTime()) {
+    ctx.log("claude: Claude Code token expired; skipping account-wide usage");
+    return null;
+  }
+
+  const poll = await requestOAuthUsage(ctx, creds.token);
+  const parsed = poll.status === 200 ? parseOAuthUsage(poll.json) : null;
+  if (parsed === null) {
+    const reason = poll.status === 200 ? "unexpected-shape" : `http-${poll.status}`;
+    rememberBackoff(ctx, statePath, reason, ctx.now.getTime() + OAUTH_BACKOFF_MS);
+    ctx.log(`claude: oauth usage ${reason}; not retrying for ${OAUTH_BACKOFF_MS / 60_000}m`);
+    return { ...poll, json: { stale: true, windows: [], reason } };
+  }
+  return { ...poll, json: { stale: false, windows: oauthWindows(parsed) } };
 }
 
 function readStatuslinePoll(ctx: CollectContext): RawPoll | null {
@@ -702,10 +872,20 @@ interface ClaudeWindow {
 function mergeClaudeWindows(polls: RawPoll[], capturedAt: string): ClaudeWindow[] {
   const map = new Map<string, ClaudeWindow>();
 
+  // Account-wide first: this is the only source that also sees claude.ai and other machines.
+  const oauth = polls.find((p) => p.endpoint === OAUTH_USAGE_ENDPOINT && p.status === 200);
+  const oauthBody = oauth?.json as { stale?: boolean; windows?: ParsedUsageWindow[] } | null;
+  if (oauthBody?.stale !== true && Array.isArray(oauthBody?.windows)) {
+    for (const w of oauthBody.windows) {
+      map.set(w.window, { window: w.window, usedPercent: w.usedPercent, resetsAt: w.resetsAt, source: "oauth", stale: false });
+    }
+  }
+
   const status = polls.find((p) => p.endpoint === "usage-statusline" && p.status === 200);
   const statusBody = status?.json as { fresh?: boolean; windows?: ParsedUsageWindow[] } | null;
   if (statusBody?.fresh === true && Array.isArray(statusBody.windows)) {
     for (const w of statusBody.windows) {
+      if (map.has(w.window)) continue;
       map.set(w.window, {
         window: w.window,
         usedPercent: w.usedPercent,
@@ -758,6 +938,15 @@ function mergeClaudeWindows(polls: RawPoll[], capturedAt: string): ClaudeWindow[
         source: "hook",
         stale: false,
       });
+    }
+  }
+
+  // A failed OAuth call still says "we don't know" — only for windows nothing else filled.
+  const oauthPoll = polls.find((p) => p.endpoint === OAUTH_USAGE_ENDPOINT);
+  const oauthFailed = oauthPoll !== undefined && (oauthPoll.status !== 200 || (oauthPoll.json as { stale?: boolean } | null)?.stale === true);
+  if (oauthFailed) {
+    for (const window of ["five_hour", "weekly"] as const) {
+      if (!map.has(window)) map.set(window, { window, usedPercent: null, resetsAt: null, source: "oauth", stale: true });
     }
   }
   return [...map.values()];
