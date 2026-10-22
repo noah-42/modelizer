@@ -308,12 +308,12 @@ export class SubscriptionCatalog {
     this.now = now;
   }
 
-  /** One row per provider, most expensive first within the currency mix. */
+  /** One row per provider, priciest first at the rate in force — the same number the total uses. */
   list(): Subscription[] {
     const providers = new Set<string>([...this.entries.map((e) => e.provider), ...this.facts.keys()]);
     return [...providers]
       .map((provider) => this.merge(provider))
-      .sort((a, b) => (b.monthly ?? -1) - (a.monthly ?? -1) || (a.provider < b.provider ? -1 : 1));
+      .sort((a, b) => (b.current ?? -1) - (a.current ?? -1) || (a.provider < b.provider ? -1 : 1));
   }
 
   /**

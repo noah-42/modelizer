@@ -360,7 +360,7 @@ describe("SubscriptionCatalog", () => {
     expect(rows.find((r) => r.provider === "xai")).toMatchObject({ plan: "Mystery Plan", price: null, monthly: null });
   });
 
-  test("sorts the priciest first and leaves unpriced rows last", () => {
+  test("sorts by the price in force and leaves unpriced rows last", () => {
     const catalog = new SubscriptionCatalog(
       [
         { provider: "claude", price: 20, renewsDay: 13 },

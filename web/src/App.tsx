@@ -482,6 +482,8 @@ function monthlyCost(s: Subscription): ReactNode {
 
 /** A recurring charge shows its next date; a plan that will not renew shows when it stops. */
 function chargeLine(s: Subscription, tick: number): ReactNode {
+  // A free plan has nothing to charge, so do not ask for a charge day.
+  if (s.current === 0) return <span className="muted">no charge</span>;
   if (s.endsAt !== null) {
     return (
       <span title={s.endsAt}>
