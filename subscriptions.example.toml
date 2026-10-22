@@ -12,6 +12,7 @@
 #   renews_at  ISO date of a known past charge, rolled forward — use for annual auto-renewals
 #   ends_at    last day of a plan that will not renew (prepaid term, or auto-renew off)
 #   label      display name; wins over the catalogue and the provider's own wording
+#   note       a fact the card should carry, e.g. "free daily messages, reset 2:00 AM"
 #   price = 0  a free plan: counted at zero and shown as "free"
 #   seats      seat count, when the plan is per seat
 #

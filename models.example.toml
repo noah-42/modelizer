@@ -6,10 +6,19 @@
 # one provider (an OpenAI model through OpenAI directly, or through a router that resells it).
 #
 # Fields
-#   id        model string exactly as an adapter reports it (check the per-model rows or the DB)
-#   name      display name; defaults to `id` when omitted
-#   provider  provider id of the card that serves it: claude, codex, cursor, zai, openrouter, …
+#   id                       model string exactly as an adapter reports it (check the per-model
+#                            rows or the DB); OpenRouter entries use `author/slug`
+#   name                     display name; defaults to `id` when omitted
+#   provider                 provider id of the card that serves it: claude, codex, cursor, zai,
+#                            openrouter, …
+#   source_url               where the entry came from, when added by link
+#   context_length           context window in tokens
+#   prompt_usd_per_mtok      USD per million prompt tokens, as quoted
+#   completion_usd_per_mtok  USD per million completion tokens
 #
+# Entries are also added on the models page by pasting an OpenRouter link; that fills these
+# fields from OpenRouter's catalogue and appends the block here.
+
 # Matching is case-insensitive, and a reported id that starts with a configured id matches it
 # (`claude-sonnet-5-5-20260101` → `claude-sonnet-5-5`). The longest match wins, so a more specific
 # block can override a family. Anything unmatched stays unknown rather than being guessed.

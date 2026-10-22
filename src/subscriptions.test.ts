@@ -207,6 +207,7 @@ describe("SubscriptionCatalog", () => {
       seats: null,
       source: "claude-oauth+config",
       configured: true,
+      note: null,
     });
   });
 

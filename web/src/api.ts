@@ -65,6 +65,8 @@ export interface OverviewProvider {
   }>;
   /** Plan/billing row for this provider, when subscriptions.toml or the adapter has one. */
   subscription: Subscription | null;
+  /** A plan with no API behind it: shown for completeness, with nothing to poll or meter. */
+  planOnly: boolean;
 }
 
 export interface Overview {
@@ -145,6 +147,8 @@ export interface Subscription {
   seats: number | null;
   source: string;
   configured: boolean;
+  /** A recorded fact from subscriptions.toml, shown on the card. */
+  note: string | null;
 }
 
 export interface CurrencyTotal {
@@ -167,6 +171,12 @@ export interface LlmModel {
   id: string;
   name: string;
   provider: string;
+  /** Where an added entry came from, e.g. its OpenRouter page. */
+  sourceUrl?: string;
+  contextLength?: number;
+  /** USD per million tokens, as the provider quotes them. */
+  promptUsdPerMTok?: number;
+  completionUsdPerMTok?: number;
 }
 
 export interface ModelsResponse {
@@ -203,6 +213,18 @@ export async function fetchModels(): Promise<ModelsResponse> {
   const body = (await res.json()) as ModelsResponse;
   if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
   return body;
+}
+
+/** Add a model to the catalogue from its OpenRouter link; the server fills in the details. */
+export async function addModel(url: string): Promise<LlmModel> {
+  const res = await fetch("/api/models", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  const body = (await res.json()) as { model?: LlmModel; error?: string };
+  if (!res.ok || body.model === undefined) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body.model;
 }
 
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {

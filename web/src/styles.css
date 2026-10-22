@@ -77,6 +77,52 @@ body {
   font-weight: 600;
   border-bottom-color: var(--accent);
 }
+.model-add {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.model-url {
+  flex: 1;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+.add-btn {
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--accent, #4a6cf7);
+  color: #fff;
+  cursor: pointer;
+}
+.add-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.model-row {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.model-name {
+  min-width: 220px;
+}
+.model-id a {
+  color: inherit;
+}
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 13px;
@@ -278,6 +324,8 @@ body {
   gap: 8px;
   margin: 0 0 6px;
   font-size: 13px;
+  /* A quiet read-out under a dark headline: the figures are there, nothing shouts. */
+  color: var(--muted);
 }
 /* Kept upright and non-bold: this line is a status read-out, not a heading. */
 .window-reset .countdown {

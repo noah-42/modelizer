@@ -11,12 +11,20 @@ import {
   type Subscription,
 } from "./subscriptions";
 import {
+  appendModel,
   DEFAULT_MODELS_PATH,
   loadModels,
   ModelCatalog,
   ModelConfigError,
+  ModelExistsError,
   type LlmModel,
 } from "./models";
+import {
+  fetchOpenRouterModel,
+  OpenRouterUnknownModelError,
+  OpenRouterUrlError,
+  parseModelRef,
+} from "./openrouter";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
 
 export interface DegradedEndpoint {
@@ -42,6 +50,11 @@ export interface OverviewProvider {
   windows: OverviewWindow[];
   /** Plan/billing row from the Subscriptions page, when one exists for this provider. */
   subscription: Subscription | null;
+  /**
+   * True for a plan that is written down in subscriptions.toml but has no API to poll — a free
+   * plan with nothing to meter. The card shows the plan and skips the polling chrome.
+   */
+  planOnly: boolean;
 }
 
 /** Model → provider associations from models.toml. */
@@ -102,10 +115,14 @@ export function buildApi(deps: {
   env: Record<string, string | undefined>;
   now?: () => Date;
   currentSessionId?: number;
+  /** Injected so tests can answer the OpenRouter catalogue without leaving the process. */
+  fetchFn?: typeof fetch;
 }): Hono {
   const { db, adapters, env } = deps;
   const now = deps.now ?? (() => new Date());
+  const fetchFn = deps.fetchFn ?? fetch;
   const app = new Hono();
+  const modelsPath = () => env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
 
   app.get("/api/overview", (c) => {
     const states = new Map(db.getAllAdapterStates().map((s) => [s.provider, s]));
@@ -147,10 +164,38 @@ export function buildApi(deps: {
           ({ provider: _provider, ...window }) => window,
         ),
         subscription: planRows.get(a.id) ?? null,
+        planOnly: false,
       };
     });
+    // A plan with no adapter still belongs on the dashboard: it is something you are signed up to.
+    const polled = new Set(adapters.map((a) => a.id));
+    for (const row of planRows.values()) {
+      if (!polled.has(row.provider)) providers.push(planOnlyProvider(row));
+    }
     return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);
   });
+
+  /** A card for a plan that has no endpoint behind it: the row and nothing pretending to poll. */
+  function planOnlyProvider(subscription: Subscription): OverviewProvider {
+    return {
+      id: subscription.provider,
+      stabilityTier: 0,
+      pollEverySeconds: 0,
+      configured: true,
+      lastSuccess: null,
+      lastError: null,
+      lastErrorAt: null,
+      consecutiveFailures: 0,
+      stale: false,
+      status: [],
+      notes: [],
+      degradedEndpoints: [],
+      points: [],
+      windows: [],
+      subscription,
+      planOnly: true,
+    };
+  }
 
   app.get("/api/providers/:id/raw", (c) => {
     const id = c.req.param("id");
@@ -186,8 +231,30 @@ export function buildApi(deps: {
     return c.json({ days: buildDiary(db, since) });
   });
 
+  /**
+   * Add a model to the catalogue from its OpenRouter link. The link supplies only the id; every
+   * field written to models.toml comes from OpenRouter's catalogue endpoint.
+   */
+  app.post("/api/models", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { url?: unknown } | null;
+    const input = typeof body?.url === "string" ? body.url : "";
+    const path = modelsPath();
+    try {
+      const model = await fetchOpenRouterModel(parseModelRef(input), fetchFn);
+      appendModel(model, path);
+      return c.json({ model, path }, 201);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (err instanceof OpenRouterUrlError) return c.json({ error: message }, 400);
+      if (err instanceof OpenRouterUnknownModelError) return c.json({ error: message }, 404);
+      if (err instanceof ModelExistsError) return c.json({ error: message }, 409);
+      if (err instanceof ModelConfigError) return c.json({ error: message }, 422);
+      return c.json({ error: `could not add the model: ${message}` }, 502);
+    }
+  });
+
   app.get("/api/models", (c) => {
-    const path = env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
+    const path = modelsPath();
     try {
       const models = new ModelCatalog(loadModels(path)).list();
       const body: ModelsResponse = { generatedAt: now().toISOString(), path, models, error: null };

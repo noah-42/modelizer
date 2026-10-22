@@ -46,6 +46,8 @@ export interface SubscriptionEntry {
   plan?: string;
   /** Display name when the plan has no catalogue entry (config is the user's own wording). */
   label?: string;
+  /** A fact worth carrying on the card, e.g. "free daily messages, reset 2:00 AM". */
+  note?: string;
   /** Amount per billing period, in `currency`. */
   price?: number;
   /** Amount charged from the next renewal on (intro offers); monthly cost uses this. */
@@ -92,6 +94,8 @@ export interface Subscription {
   source: string;
   /** True when the provider appears in subscriptions.toml. */
   configured: boolean;
+  /** A recorded fact from subscriptions.toml, shown on the card and the row. */
+  note: string | null;
 }
 
 export interface KnownPlan {
@@ -167,6 +171,8 @@ function parseEntry(block: unknown, index: number, path: string): SubscriptionEn
   if (plan !== null) entry.plan = plan;
   const label = optionalString(b.label, `${where}: label`);
   if (label !== null) entry.label = label;
+  const note = optionalString(b.note, `${where}: note`);
+  if (note !== null) entry.note = note;
   const price = optionalAmount(b.price, `${where}: price`);
   if (price !== null) entry.price = price;
   const priceNext = optionalAmount(b.price_next, `${where}: price_next`);
@@ -368,6 +374,7 @@ export class SubscriptionCatalog {
       seats: entry?.seats ?? facts?.seats ?? null,
       source: sourceLabel(entry !== undefined, facts?.source),
       configured: entry !== undefined,
+      note: entry?.note ?? null,
     };
   }
 }

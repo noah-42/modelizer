@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  addModel,
   fetchAudit,
   fetchDiary,
   fetchModels,
@@ -61,7 +62,7 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-type Tab = "dashboard" | "subscriptions" | "audit" | "diary";
+type Tab = "dashboard" | "subscriptions" | "models" | "audit" | "diary";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -71,7 +72,7 @@ export function App() {
         <h1>modelizer</h1>
       </header>
       <nav className="tabs">
-        {(["dashboard", "subscriptions", "audit", "diary"] as const).map((t) => (
+        {(["dashboard", "subscriptions", "models", "audit", "diary"] as const).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
@@ -79,6 +80,7 @@ export function App() {
       </nav>
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
+      {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
     </div>
@@ -355,6 +357,131 @@ function DiaryView() {
   );
 }
 
+/**
+ * The model catalogue, and the way it grows: paste an OpenRouter link, the server reads the model's
+ * own metadata and records the entry. The page shows what is known and where each row came from.
+ */
+function ModelsView() {
+  const [models, setModels] = useState<LlmModel[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [url, setUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [added, setAdded] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const body = await fetchModels();
+      setModels(body.models);
+      setError(body.error);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const add = async () => {
+    if (url.trim() === "" || adding) return;
+    setAdding(true);
+    setError(null);
+    setAdded(null);
+    try {
+      const model = await addModel(url.trim());
+      setUrl("");
+      setAdded(`${model.name} added`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const byProvider = new Map<string, LlmModel[]>();
+  for (const m of models ?? []) {
+    const list = byProvider.get(m.provider) ?? [];
+    list.push(m);
+    byProvider.set(m.provider, list);
+  }
+
+  return (
+    <>
+      <div className="head-line">
+        <span className="muted">
+          {models === null ? "loading" : `${models.length} model${models.length === 1 ? "" : "s"} · from models.toml`}
+        </span>
+      </div>
+      <div className="card model-add">
+        <input
+          className="model-url"
+          type="url"
+          placeholder="https://openrouter.ai/openai/gpt-5"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && void add()}
+          aria-label="OpenRouter model link"
+        />
+        <button className="add-btn" onClick={() => void add()} disabled={adding || url.trim() === ""}>
+          {adding ? "adding…" : "add model"}
+        </button>
+      </div>
+      {error && <div className="banner error">{error}</div>}
+      {added && <div className="banner">{added}</div>}
+      {models !== null && models.length === 0 && (
+        <div className="banner">No models in the catalogue yet — paste an OpenRouter link above.</div>
+      )}
+      {[...byProvider.entries()].map(([provider, list]) => (
+        <section key={provider} className="card">
+          <div className="card-head">
+            <h2 title={provider}>
+              <ProviderIcon id={provider} />
+              {providerName(provider)}
+            </h2>
+          </div>
+          <div className="model-list">
+            {list.map((m) => (
+              <div key={m.id} className="model-row">
+                <span className="model-name">{m.name}</span>
+                {m.contextLength !== undefined && (
+                  <span className="muted">{fmtTokensShort(m.contextLength)} context</span>
+                )}
+                {m.promptUsdPerMTok !== undefined && m.completionUsdPerMTok !== undefined && (
+                  <span className="muted">
+                    {usdPerM(m.promptUsdPerMTok)} in · {usdPerM(m.completionUsdPerMTok)} out per Mtok
+                  </span>
+                )}
+                <span className="muted model-id" title={m.sourceUrl ?? m.id}>
+                  {m.sourceUrl !== undefined ? (
+                    <a href={m.sourceUrl} target="_blank" rel="noreferrer">
+                      {m.id}
+                    </a>
+                  ) : (
+                    m.id
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
+  );
+}
+
+/** Token counts on the catalogue page read at a glance: 262144 becomes 262k. */
+function fmtTokensShort(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
+/** Prices per million tokens, trimmed of trailing zeros: 1.25 stays 1.25, 0 reads free. */
+function usdPerM(rate: number): string {
+  if (rate === 0) return "free";
+  return `$${Number(rate.toFixed(rate < 1 ? 3 : 2))}`;
+}
+
 function SubscriptionsView() {
   const [data, setData] = useState<SubscriptionsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -527,7 +654,7 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   zai: "ZAI",
   openrouter: "Open Router",
   opencode: "OpenCode",
-  freellmapi: "freellmapi.com",
+  freellmapi: "freellmapi.co",
 };
 
 function providerName(id: string): string {
@@ -544,6 +671,7 @@ const PROVIDER_ICONS: Readonly<Record<string, string>> = {
   openrouter: "openrouter",
   zai: "zai",
   opencode: "opencode",
+  freellmapi: "freellm",
 };
 
 function ProviderIcon({ id }: { id: string }) {
@@ -624,6 +752,12 @@ function statusOf(p: OverviewProvider): { label: string; className: string } {
     return { label: `failing ×${p.consecutiveFailures}`, className: "badge bad" };
   if (p.stale) return { label: "stale", className: "badge warn" };
   return { label: "ok", className: "badge good" };
+}
+
+/** The plan-only front line names the money plainly; there is no meter to read. */
+function friendlyMoney(s: Subscription): string {
+  if (s.current === null) return "set price";
+  return `${money(s.current, s.currency)}/month`;
 }
 
 /** Aggregate per-model daily history (tokens or spend) into today/total totals, busiest first. */
@@ -714,15 +848,31 @@ function ProviderCard({
           </button>
         </h2>
         <div className="badges">
-          <span className="badge tier" title={`polls every ${p.pollEverySeconds}s`}>
-            T{p.stabilityTier}
-          </span>
-          <span className={status.className}>{status.label}</span>
+          {!p.planOnly && (
+            <>
+              <span className="badge tier" title={`polls every ${p.pollEverySeconds}s`}>
+                T{p.stabilityTier}
+              </span>
+              <span className={status.className}>{status.label}</span>
+            </>
+          )}
           <button className="icon-btn" onClick={onHide} aria-label={`hide ${p.id}`} title="hide card">
             ✕
           </button>
         </div>
       </div>
+
+      {p.planOnly && p.subscription !== null && (
+        <div className="window-reset">
+          <span className="status-dot" />
+          <span>
+            {p.subscription.current === 0
+              ? "free — nothing to meter"
+              : `${friendlyMoney(p.subscription)} a month — no provider API to meter`}
+            {p.subscription.note !== null && <span title="from subscriptions.toml"> · {p.subscription.note}</span>}
+          </span>
+        </div>
+      )}
 
       {gateWindows.map((w) => (
         <div key={w.label} className="window-reset" title={w.reset_at ?? undefined}>
@@ -764,11 +914,13 @@ function ProviderCard({
           )}
           {p.points.length === 0 ? (
             <p className="muted">
-              {p.subscription !== null
-                ? `${p.subscription.plan} — plan only, no usage numbers; see the subscriptions tab`
-                : p.configured
-                  ? "no data yet — first poll may still be running"
-                  : "waiting for credentials in .env"}
+              {p.planOnly
+                ? "no provider API behind this plan — the subscriptions tab has the row"
+                : p.subscription !== null
+                  ? `${p.subscription.plan} — plan only, no usage numbers; see the subscriptions tab`
+                  : p.configured
+                    ? "no data yet — first poll may still be running"
+                    : "waiting for credentials in .env"}
             </p>
           ) : (
             <div className="points">
@@ -800,9 +952,11 @@ function ProviderCard({
             </details>
           )}
           <p className="muted card-foot">
-            {p.lastSuccess
-              ? `last poll ${relTime(p.lastSuccess, tick)} · next in ${nextIn(p.lastSuccess, p.pollEverySeconds, tick)}`
-              : "never polled"}
+            {p.planOnly
+              ? "not polled — recorded in subscriptions.toml"
+              : p.lastSuccess
+                ? `last poll ${relTime(p.lastSuccess, tick)} · next in ${nextIn(p.lastSuccess, p.pollEverySeconds, tick)}`
+                : "never polled"}
           </p>
         </div>
       )}

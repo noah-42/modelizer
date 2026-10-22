@@ -231,9 +231,14 @@ describe("end to end", () => {
     });
     const res = await app.request("/api/overview");
     const overview = (await res.json()) as {
-      providers: Array<{ id: string; notes: unknown[]; points: Array<{ day: string | null }> }>;
+      providers: Array<{ id: string; planOnly: boolean; notes: unknown[]; points: unknown[] }>;
     };
-    expect(overview.providers.map((p) => p.id)).toEqual(["zai", "openrouter"]);
+    // Adapters keep their order; plan-only rows (a subscription with no API to poll) follow them.
+    expect(overview.providers.slice(0, 2).map((p) => p.id)).toEqual(["zai", "openrouter"]);
+    for (const planOnly of overview.providers.slice(2)) {
+      expect(planOnly.planOnly).toBe(true);
+      expect(planOnly.points).toHaveLength(0);
+    }
     expect(overview.providers[0]!.notes.length).toBeGreaterThan(0);
     db.close();
   });

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { parse } from "smol-toml";
 
 /**
@@ -20,6 +20,14 @@ export interface LlmModel {
   name: string;
   /** Provider id that serves it, matching the card ids (`claude`, `codex`, `zai`, …). */
   provider: string;
+  /** Where the entry was read from, when it was added by URL rather than by hand. */
+  sourceUrl?: string | undefined;
+  /** Context window in tokens, as the provider states it. */
+  contextLength?: number | undefined;
+  /** USD per million prompt tokens. Kept as quoted, not converted: the rate is theirs. */
+  promptUsdPerMTok?: number | undefined;
+  /** USD per million completion tokens. */
+  completionUsdPerMTok?: number | undefined;
 }
 
 export class ModelConfigError extends Error {}
@@ -61,7 +69,23 @@ function parseEntry(block: unknown, index: number, path: string): LlmModel {
   const id = requireText(b.id, `${where}: id`);
   const provider = requireText(b.provider, `${where}: provider`);
   const name = b.name === undefined ? id : requireText(b.name, `${where}: name`);
-  return { id, name, provider };
+  return {
+    id,
+    name,
+    provider,
+    sourceUrl: b.source_url === undefined ? undefined : requireText(b.source_url, `${where}: source_url`),
+    contextLength: optionalNumber(b.context_length, `${where}: context_length`),
+    promptUsdPerMTok: optionalNumber(b.prompt_usd_per_mtok, `${where}: prompt_usd_per_mtok`),
+    completionUsdPerMTok: optionalNumber(b.completion_usd_per_mtok, `${where}: completion_usd_per_mtok`),
+  };
+}
+
+function optionalNumber(value: unknown, where: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ModelConfigError(`${where} must be a number`);
+  }
+  return value;
 }
 
 function requireText(value: unknown, where: string): string {
@@ -73,6 +97,52 @@ function requireText(value: unknown, where: string): string {
 
 function modelKey(id: string): string {
   return id.trim().toLowerCase();
+}
+
+/** A later model cannot be told apart from a missing one, so adding refuses to overwrite a key. */
+export class ModelExistsError extends ModelConfigError {}
+
+/**
+ * Append one entry to the catalogue, leaving the rest of the file untouched. Written to a temporary
+ * sibling and renamed into place so a crash mid-write cannot truncate a catalogue you curated.
+ */
+export function appendModel(model: LlmModel, path = DEFAULT_MODELS_PATH): void {
+  const existing = loadModels(path);
+  if (existing.some((m) => modelKey(m.id) === modelKey(model.id))) {
+    throw new ModelExistsError(`${path}: "${model.id}" is already in the catalogue`);
+  }
+  const current = readTextOrEmpty(path);
+  const separator = current.trim() === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+  const next = `${current}${separator}${serializeModel(model, path)}\n`;
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, next, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function readTextOrEmpty(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw err;
+  }
+}
+
+/** One block, in the field order the example file documents; empty fields are left out. */
+function serializeModel(model: LlmModel, path: string): string {
+  const lines = ["[[model]]", `id = ${quote(model.id)}`, `name = ${quote(model.name)}`];
+  if (model.provider.trim() === "") throw new ModelConfigError(`${path}: provider is required`);
+  lines.push(`provider = ${quote(model.provider)}`);
+  if (model.sourceUrl !== undefined) lines.push(`source_url = ${quote(model.sourceUrl)}`);
+  if (model.contextLength !== undefined) lines.push(`context_length = ${model.contextLength}`);
+  if (model.promptUsdPerMTok !== undefined) lines.push(`prompt_usd_per_mtok = ${model.promptUsdPerMTok}`);
+  if (model.completionUsdPerMTok !== undefined) lines.push(`completion_usd_per_mtok = ${model.completionUsdPerMTok}`);
+  return lines.join("\n");
+}
+
+/** JSON string quoting is valid TOML basic-string quoting. */
+function quote(value: string): string {
+  return JSON.stringify(value);
 }
 
 /**
