@@ -139,6 +139,9 @@ function DashboardView() {
         <span className="muted">
           {overview ? `updated ${relTime(overview.generatedAt, tick)}` : error ? "…" : "loading"}
         </span>
+        <span className="clock" title="local time">
+          {fmtNow()}
+        </span>
       </div>
 
       {error && (
@@ -947,6 +950,18 @@ function nextIn(lastSuccessIso: string, pollEverySeconds: number, _tick: number)
 }
 
 // Browser-local timezone (so Berlin CET/CEST for you), DST handled by Intl.
+/**
+ * The wall clock, ticking on the same second as the countdowns, so "refreshes in 24m" has a point
+ * of reference instead of asking you to look at your menu bar.
+ */
+function fmtNow(): string {
+  return new Date().toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function fmtLocalClock(iso: string): string {
   const d = new Date(iso);
   const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });

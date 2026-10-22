@@ -77,6 +77,11 @@ body {
   font-weight: 600;
   border-bottom-color: var(--accent);
 }
+.clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--muted);
+}
 .head-line {
   display: flex;
   justify-content: space-between;
@@ -232,9 +237,19 @@ body {
 .card-head h2 {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin: 0;
-  font-size: 16px;
+  font-size: 19px;
+  /* The card's own content is the hierarchy; the headline only names the provider. */
+  font-weight: 400;
+}
+/* Brand marks are what you scan for, so they read at a glance on the headline. */
+.card-head h2 .provider-icon {
+  width: 26px;
+  height: 26px;
+}
+.card-head h2 .provider-icon-text {
+  font-size: 15px;
 }
 .card-toggle {
   display: inline-flex;
