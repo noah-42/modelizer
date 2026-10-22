@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexAdapter, type CodexSummary } from "./codex";
+import { authJsonPath, codexAdapter, codexFactsFromClaims, readCodexClaims, type CodexSummary } from "./codex";
 import type { CollectContext, RawPoll } from "./types";
 
 // Timestamps are pinned around a fixed "now" so the 8-day scan window is deterministic.
@@ -412,5 +412,74 @@ describe("codex adapter (T3 local transcripts)", () => {
     expect(() => codexAdapter.normalize([], "at")).toThrow(/no sessions-jsonl poll/);
     const broken: RawPoll = { endpoint: "sessions-jsonl", url: "file://x", status: 200, body: "{}", json: null, headers: {} };
     expect(() => codexAdapter.normalize([broken], "at")).toThrow(/unexpected summary shape/);
+  });
+});
+
+describe("codex plan claims", () => {
+  /** Build a JWT with only the payload we care about; the signature is never checked here. */
+  function fakeIdToken(claim: Record<string, unknown>): string {
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    return `${enc({ alg: "RS256" })}.${enc({ "https://api.openai.com/auth": claim })}.signature`;
+  }
+
+  function authFile(name: string, body: unknown): string {
+    const home = join(root, name);
+    mkdirSync(join(home, "sessions"), { recursive: true });
+    writeFileSync(join(home, "auth.json"), JSON.stringify(body));
+    return join(home, "sessions");
+  }
+
+  test("reads the plan from the id token and nothing else", () => {
+    const sessions = authFile("plan-plus", {
+      auth_mode: "chatgpt",
+      tokens: { id_token: fakeIdToken({ chatgpt_plan_type: "plus", email: "someone@example.com" }) },
+    });
+    const path = authJsonPath({ CODEX_SESSIONS_DIR: sessions });
+    expect(readCodexClaims(path)).toEqual({ planType: "plus", activeUntil: null });
+  });
+
+  test("returns null for an API-key login with no id token", () => {
+    const sessions = authFile("plan-apikey", { auth_mode: "apikey", OPENAI_API_KEY: "sk-test" });
+    expect(readCodexClaims(authJsonPath({ CODEX_SESSIONS_DIR: sessions }))).toBeNull();
+  });
+
+  test("returns null when auth.json is absent or malformed", () => {
+    mkdirSync(join(root, "no-auth", "sessions"), { recursive: true });
+    expect(readCodexClaims(join(root, "no-auth", "auth.json"))).toBeNull();
+    const bad = join(root, "bad-auth.json");
+    writeFileSync(bad, "{not json");
+    expect(readCodexClaims(bad)).toBeNull();
+  });
+
+  test("maps plan types to the labels the page shows", () => {
+    expect(codexFactsFromClaims({ planType: "plus" })).toEqual({
+      provider: "codex",
+      planId: "plus",
+      planName: "ChatGPT Plus",
+      state: "active",
+      period: null,
+      renewsAt: null,
+      seats: null,
+      source: "codex-auth",
+    });
+    expect(codexFactsFromClaims({ planType: "pro" })).toMatchObject({ planName: "ChatGPT Pro" });
+    expect(codexFactsFromClaims({ planType: "free" })).toBeNull();
+    expect(codexFactsFromClaims({ planType: "mystery" })).toMatchObject({ planId: "mystery", planName: null });
+  });
+
+  test("collect archives the plan claims without the token", async () => {
+    const sessions = authFile("plan-telemetry", {
+      tokens: { id_token: fakeIdToken({ chatgpt_plan_type: "plus" }), access_token: "secret-access" },
+    });
+    const polls = await codexAdapter.collect({
+      fetchFn: fetch,
+      env: { CODEX_SESSIONS_DIR: sessions, CODEX_APP_SERVER: "0" },
+      now: NOW,
+      log: () => {},
+    });
+    const claims = polls.find((p) => p.endpoint === "auth-claims");
+    expect(claims?.json).toEqual({ planType: "plus", activeUntil: null });
+    expect(claims?.body).not.toContain("secret-access");
+    expect(codexAdapter.subscriptionFacts?.(polls, NOW)).toMatchObject({ planId: "plus" });
   });
 });

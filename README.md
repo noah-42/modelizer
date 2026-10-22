@@ -50,8 +50,9 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
-  `monthlyUsd`, `renewsAt`, `source`, plus `totalMonthlyUsd`. A malformed `subscriptions.toml`
-  answers 422 with `error` set, and the page shows the message.
+  `price`, `priceNext`, `currency`, `monthly`, `renewsAt`/`endsAt`, `source`, plus `totals[]`
+  (monthly spend **per currency** — USD and EUR are never added together). A malformed
+  `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
 
 ## Subscriptions
 
@@ -60,16 +61,24 @@ date. Two sources are merged, because no provider exposes both halves:
 
 | Source | Supplies | Where it comes from |
 |---|---|---|
-| provider facts | plan, billing state, seats, billing period | Claude `/api/oauth/profile` (`CLAUDE_OAUTH_USAGE=1`), Cursor `/auth/full_stripe_profile` |
-| `subscriptions.toml` | price, renewal day | your own file (gitignored, see `subscriptions.example.toml`) |
+| provider facts | plan, billing state, seats, billing period | Claude `/api/oauth/profile` (`CLAUDE_OAUTH_USAGE=1`), Cursor `/auth/full_stripe_profile`, OpenAI via Codex `~/.codex/auth.json` |
+| `subscriptions.toml` | price, currency, renewal day, paid-through date | your own file (gitignored, see `subscriptions.example.toml`) |
 
 Facts win for plan and state — the provider knows. Config wins for price and renewal, because
-neither API states the charge date (Claude reports `subscription_created_at` only, Cursor nothing).
-Nothing is guessed: a plan missing from the price table shows "set price_usd", a missing charge
-day shows "set renews_day", and an unknown plan id keeps `planName` null instead of inventing a
-label. `renews_day` is a day of month (clamped in short months); `renews_at` rolls an annual date
-forward instead. xAI has no programmatic path — its API exposes credits for API keys, not the
-SuperGrok subscription — so it is config-only.
+none of those APIs states a charge date (Claude reports `subscription_created_at`, Codex nothing,
+Cursor nothing). Nothing is guessed: an unpriced plan shows "set price", a missing charge day
+shows "set renews_day", and an unknown plan id keeps a null name unless the config gives it a
+`label`.
+
+Money stays in the currency it is billed in: `currency = "EUR"` is shown as euros and totalled
+separately from dollars, because converting would invent an exchange rate. `price_next` models an
+intro rate (charged 15 now, 30 from the next renewal): the row shows both, the total uses the
+recurring amount. `renews_day` is a day of month (clamped in short months), `renews_at` rolls an
+annual charge forward, and `ends_at` marks a prepaid term that simply runs out — shown as "paid
+through" rather than a renewal.
+
+xAI has no programmatic path — its API exposes credits for API keys, not the SuperGrok
+subscription — so it is config-only.
 
 Cursor's access token is read read-only from Cursor's own `state.vscdb`
 (`cursorAuth/accessToken`), sent only to `api2.cursor.sh`, and never logged or written back.

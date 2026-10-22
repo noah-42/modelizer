@@ -7,6 +7,7 @@ import {
   loadSubscriptions,
   SubscriptionCatalog,
   SubscriptionConfigError,
+  type CurrencyTotal,
   type Subscription,
 } from "./subscriptions";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
@@ -41,7 +42,8 @@ export interface SubscriptionsResponse {
   generatedAt: string;
   /** Which file the price/renewal half came from. */
   configPath: string;
-  totalMonthlyUsd: number;
+  /** Monthly spend per currency; currencies are never summed together. */
+  totals: CurrencyTotal[];
   subscriptions: Subscription[];
   /** Set when subscriptions.toml could not be parsed; the page shows it instead of rows. */
   error: string | null;
@@ -171,7 +173,7 @@ export function buildApi(deps: {
       const broken: SubscriptionsResponse = {
         generatedAt,
         configPath: view.configPath,
-        totalMonthlyUsd: view.totalMonthlyUsd,
+        totals: [],
         subscriptions: [],
         error: view.error,
       };
@@ -180,7 +182,7 @@ export function buildApi(deps: {
     const body: SubscriptionsResponse = {
       generatedAt,
       configPath: view.configPath,
-      totalMonthlyUsd: view.totalMonthlyUsd,
+      totals: view.totals,
       subscriptions: view.rows,
       error: null,
     };
@@ -195,7 +197,7 @@ export function buildApi(deps: {
 
 interface SubscriptionView {
   rows: Subscription[];
-  totalMonthlyUsd: number;
+  totals: CurrencyTotal[];
   configPath: string;
   error: string | null;
 }
@@ -211,10 +213,10 @@ function readSubscriptions(db: Db, env: Record<string, string | undefined>, at: 
     const entries = loadSubscriptions(configPath);
     const facts = db.getSubscriptionFacts().map((row) => row.facts);
     const catalog = new SubscriptionCatalog(entries, facts, at);
-    return { rows: catalog.list(), totalMonthlyUsd: catalog.totalMonthlyUsd(), configPath, error: null };
+    return { rows: catalog.list(), totals: catalog.totals(), configPath, error: null };
   } catch (err) {
     const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
-    return { rows: [], totalMonthlyUsd: 0, configPath, error: message };
+    return { rows: [], totals: [], configPath, error: message };
   }
 }
 

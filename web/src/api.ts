@@ -19,6 +19,10 @@ export interface UsagePoint {
   tokens_out: number | null;
   cost_usd: number | null;
   captured_at: string;
+  /** `pricing` marks a cost derived from list prices rather than reported by the provider. */
+  source: string | null;
+  quota_window?: string | null;
+  stale?: boolean;
 }
 
 export interface StatusNote {
@@ -118,20 +122,32 @@ export type SubscriptionState = "active" | "trialing" | "cancelled" | "past_due"
 export interface Subscription {
   provider: string;
   plan: string;
-  priceUsd: number | null;
+  /** Amount per billing period in `currency`, as billed now. */
+  price: number | null;
+  /** Amount from the next renewal on, when it differs (intro rate). */
+  priceNext: number | null;
+  currency: string;
   period: BillingPeriod;
-  monthlyUsd: number | null;
+  /** Recurring monthly cost in `currency` (priceNext ?? price, annualised). */
+  monthly: number | null;
   renewsAt: string | null;
+  /** Paid-through date of a prepaid term; null when it renews instead. */
+  endsAt: string | null;
   state: SubscriptionState;
   seats: number | null;
   source: string;
   configured: boolean;
 }
 
+export interface CurrencyTotal {
+  currency: string;
+  monthly: number;
+}
+
 export interface SubscriptionsResponse {
   generatedAt: string;
   configPath: string;
-  totalMonthlyUsd: number;
+  totals: CurrencyTotal[];
   subscriptions: Subscription[];
   /** Set when subscriptions.toml could not be parsed. */
   error: string | null;

@@ -2,15 +2,15 @@ import { readFileSync } from "node:fs";
 import { parse } from "smol-toml";
 
 /**
- * Subscriptions = the things with a monthly bill: plan, price, renewal, state.
+ * Subscriptions = the things with a recurring bill: plan, price, renewal, state.
  *
  * Two inputs are merged:
- *   1. `subscriptions.toml` — the user's own facts (price paid, renewal day).
+ *   1. `subscriptions.toml` — the user's own facts (price paid, renewal day, paid-through date).
  *   2. provider facts — what an adapter can read from the provider (plan, status, seats).
  *
- * Facts win for plan/state because the provider knows; config wins for price and renewal
- * because no provider in this app exposes the charge date. Nothing here guesses a price it
- * cannot source: an unknown plan keeps `priceUsd: null` and the page says so.
+ * Facts win for plan/state because the provider knows; config wins for price and renewal because
+ * no provider here exposes the charge date. Money is kept in the currency it is billed in — this
+ * app does not invent an exchange rate — so totals are reported per currency.
  */
 
 export type BillingPeriod = "monthly" | "annual";
@@ -19,11 +19,15 @@ export type SubscriptionState = "active" | "trialing" | "cancelled" | "past_due"
 
 const PERIODS: readonly BillingPeriod[] = ["monthly", "annual"];
 const STATES: readonly SubscriptionState[] = ["active", "trialing", "cancelled", "past_due", "unknown"];
+const MONTHS_PER_YEAR = 12;
+const DEFAULT_CURRENCY = "USD";
+/** Renewals are day-precision, so park the instant mid-day UTC to survive any local offset. */
+const RENEWAL_HOUR_UTC = 9;
 
 /** What a provider reports about the plan behind a card. Pure output of an adapter. */
 export interface SubscriptionFacts {
   provider: string;
-  /** Provider-native plan id, e.g. `pro` for Claude or Cursor. */
+  /** Provider-native plan id, e.g. `pro` for Claude or Cursor, `plus` for ChatGPT. */
   planId: string | null;
   /** Human label when the provider gives one. */
   planName: string | null;
@@ -40,11 +44,20 @@ export interface SubscriptionFacts {
 export interface SubscriptionEntry {
   provider: string;
   plan?: string;
-  priceUsd?: number;
+  /** Display name when the plan has no catalogue entry (config is the user's own wording). */
+  label?: string;
+  /** Amount per billing period, in `currency`. */
+  price?: number;
+  /** Amount charged from the next renewal on (intro offers); monthly cost uses this. */
+  priceNext?: number;
+  /** ISO 4217 code; defaults to USD. */
+  currency?: string;
   period?: BillingPeriod;
   /** Day of month the card is charged, 1-31. Clamped in short months. */
   renewsDay?: number;
   renewsAt?: string;
+  /** Paid-through date of a prepaid term that does not auto-renew (e.g. an annual plan). */
+  endsAt?: string;
   state?: SubscriptionState;
   seats?: number;
 }
@@ -53,12 +66,18 @@ export interface SubscriptionEntry {
 export interface Subscription {
   provider: string;
   plan: string;
-  /** Price per billing period, USD. Null when neither config nor the plan catalogue knows it. */
-  priceUsd: number | null;
+  /** Amount per billing period in `currency`, as billed now. Null when unknown. */
+  price: number | null;
+  /** Amount from the next renewal on, when it differs from `price`. */
+  priceNext: number | null;
+  currency: string;
   period: BillingPeriod;
-  /** priceUsd normalised to a month; the page's total uses this. */
-  monthlyUsd: number | null;
+  /** Recurring monthly cost in `currency` (priceNext ?? price, annualised). Drives the total. */
+  monthly: number | null;
+  /** Next automatic charge, when the plan renews. */
   renewsAt: string | null;
+  /** Paid-through date for a prepaid term; null when it renews instead. */
+  endsAt: string | null;
   state: SubscriptionState;
   seats: number | null;
   /** `config`, the provider source, or `<source>+config`. */
@@ -74,10 +93,16 @@ export interface KnownPlan {
   monthlyUsd: number;
 }
 
+/** Monthly spend in one currency; several currencies are never added together. */
+export interface CurrencyTotal {
+  currency: string;
+  monthly: number;
+}
+
 /**
  * List prices for plans this app can recognise, so a detected plan shows a cost without
- * asking the user. Override any row with `price_usd` in subscriptions.toml — annual pricing,
- * student discounts and grandfathered rates are not modelled here.
+ * asking the user. Override any row with `price` in subscriptions.toml — annual pricing,
+ * student discounts, regional VAT and grandfathered rates are not modelled here.
  */
 export const KNOWN_PLANS: readonly KnownPlan[] = [
   { provider: "claude", id: "pro", name: "Claude Pro", monthlyUsd: 20 },
@@ -86,13 +111,11 @@ export const KNOWN_PLANS: readonly KnownPlan[] = [
   { provider: "cursor", id: "pro", name: "Cursor Pro", monthlyUsd: 20 },
   { provider: "cursor", id: "pro_plus", name: "Cursor Pro+", monthlyUsd: 60 },
   { provider: "cursor", id: "ultra", name: "Cursor Ultra", monthlyUsd: 200 },
+  { provider: "codex", id: "plus", name: "ChatGPT Plus", monthlyUsd: 20 },
+  { provider: "codex", id: "pro", name: "ChatGPT Pro", monthlyUsd: 200 },
   { provider: "xai", id: "supergrok", name: "SuperGrok", monthlyUsd: 30 },
   { provider: "xai", id: "supergrok_heavy", name: "SuperGrok Heavy", monthlyUsd: 300 },
 ];
-
-const MONTHS_PER_YEAR = 12;
-/** Renewals are day-precision, so park the instant mid-day UTC to survive any local offset. */
-const RENEWAL_HOUR_UTC = 9;
 
 export class SubscriptionConfigError extends Error {}
 
@@ -125,11 +148,14 @@ function parseEntry(block: unknown, index: number, path: string): SubscriptionEn
   const entry: SubscriptionEntry = { provider };
   const plan = optionalString(b.plan, `${where}: plan`);
   if (plan !== null) entry.plan = plan;
-  const price = optionalNumber(b.price_usd, `${where}: price_usd`);
-  if (price !== null) {
-    if (price < 0) throw new SubscriptionConfigError(`${where}: price_usd must be >= 0`);
-    entry.priceUsd = price;
-  }
+  const label = optionalString(b.label, `${where}: label`);
+  if (label !== null) entry.label = label;
+  const price = optionalAmount(b.price, `${where}: price`);
+  if (price !== null) entry.price = price;
+  const priceNext = optionalAmount(b.price_next, `${where}: price_next`);
+  if (priceNext !== null) entry.priceNext = priceNext;
+  const currency = optionalString(b.currency, `${where}: currency`);
+  if (currency !== null) entry.currency = parseCurrency(currency, `${where}: currency`);
   const period = optionalString(b.period, `${where}: period`);
   if (period !== null) {
     if (!isPeriod(period)) throw new SubscriptionConfigError(`${where}: period must be monthly or annual`);
@@ -143,10 +169,9 @@ function parseEntry(block: unknown, index: number, path: string): SubscriptionEn
     entry.renewsDay = renewsDay;
   }
   const renewsAt = optionalString(b.renews_at, `${where}: renews_at`);
-  if (renewsAt !== null) {
-    if (!Number.isFinite(Date.parse(renewsAt))) throw new SubscriptionConfigError(`${where}: renews_at must be an ISO date`);
-    entry.renewsAt = renewsAt;
-  }
+  if (renewsAt !== null) entry.renewsAt = parseInstant(renewsAt, `${where}: renews_at`);
+  const endsAt = optionalString(b.ends_at, `${where}: ends_at`);
+  if (endsAt !== null) entry.endsAt = parseInstant(endsAt, `${where}: ends_at`);
   const state = optionalString(b.state, `${where}: state`);
   if (state !== null) {
     if (!isState(state)) throw new SubscriptionConfigError(`${where}: state must be one of ${STATES.join(", ")}`);
@@ -160,6 +185,17 @@ function parseEntry(block: unknown, index: number, path: string): SubscriptionEn
   return entry;
 }
 
+function parseCurrency(value: string, where: string): string {
+  const code = value.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code)) throw new SubscriptionConfigError(`${where} must be a 3-letter ISO 4217 code (USD, EUR, …)`);
+  return code;
+}
+
+function parseInstant(value: string, where: string): string {
+  if (!Number.isFinite(Date.parse(value))) throw new SubscriptionConfigError(`${where} must be an ISO date`);
+  return value;
+}
+
 function optionalString(value: unknown, where: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string" || value.trim() === "") throw new SubscriptionConfigError(`${where} must be a non-empty string`);
@@ -170,6 +206,12 @@ function optionalNumber(value: unknown, where: string): number | null {
   if (value === undefined) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) throw new SubscriptionConfigError(`${where} must be a number`);
   return value;
+}
+
+function optionalAmount(value: unknown, where: string): number | null {
+  const amount = optionalNumber(value, where);
+  if (amount !== null && amount < 0) throw new SubscriptionConfigError(`${where} must be >= 0`);
+  return amount;
 }
 
 function isPeriod(value: string): value is BillingPeriod {
@@ -186,9 +228,9 @@ export function knownPlan(provider: string, planId: string | null): KnownPlan | 
 }
 
 /** Normalise a per-period price to a monthly figure for the page total. */
-export function monthlyPrice(priceUsd: number | null, period: BillingPeriod): number | null {
-  if (priceUsd === null) return null;
-  return period === "annual" ? priceUsd / MONTHS_PER_YEAR : priceUsd;
+export function monthlyPrice(price: number | null, period: BillingPeriod): number | null {
+  if (price === null) return null;
+  return period === "annual" ? price / MONTHS_PER_YEAR : price;
 }
 
 /**
@@ -249,21 +291,24 @@ export class SubscriptionCatalog {
     this.now = now;
   }
 
-  /** One row per provider, most expensive first; unrriced rows last. */
+  /** One row per provider, most expensive first within the currency mix. */
   list(): Subscription[] {
     const providers = new Set<string>([...this.entries.map((e) => e.provider), ...this.facts.keys()]);
     return [...providers]
       .map((provider) => this.merge(provider))
-      .sort((a, b) => (b.monthlyUsd ?? -1) - (a.monthlyUsd ?? -1) || (a.provider < b.provider ? -1 : 1));
+      .sort((a, b) => (b.monthly ?? -1) - (a.monthly ?? -1) || (a.provider < b.provider ? -1 : 1));
   }
 
-  /** Monthly spend across every row that has a price. */
-  totalMonthlyUsd(): number {
-    return Number(
-      this.list()
-        .reduce((sum, s) => sum + (s.monthlyUsd ?? 0), 0)
-        .toFixed(2),
-    );
+  /** Monthly spend per currency. Currencies are never summed together. */
+  totals(): CurrencyTotal[] {
+    const byCurrency = new Map<string, number>();
+    for (const s of this.list()) {
+      if (s.monthly === null) continue;
+      byCurrency.set(s.currency, (byCurrency.get(s.currency) ?? 0) + s.monthly);
+    }
+    return [...byCurrency.entries()]
+      .map(([currency, monthly]) => ({ currency, monthly: Number(monthly.toFixed(2)) }))
+      .sort((a, b) => b.monthly - a.monthly);
   }
 
   private merge(provider: string): Subscription {
@@ -272,20 +317,32 @@ export class SubscriptionCatalog {
     const planId = entry?.plan ?? facts?.planId ?? null;
     const known = knownPlan(provider, planId);
     const period = entry?.period ?? facts?.period ?? "monthly";
-    const priceUsd = entry?.priceUsd ?? known?.monthlyUsd ?? null;
+    const currency = entry?.currency ?? DEFAULT_CURRENCY;
+    const price = entry?.price ?? known?.monthlyUsd ?? null;
+    const priceNext = entry?.priceNext ?? null;
     const state = facts !== undefined && facts.state !== "unknown" ? facts.state : (entry?.state ?? "unknown");
-    const renewsAt = nextRenewal(
-      { ...(entry?.renewsDay !== undefined ? { renewsDay: entry.renewsDay } : {}), ...(entry?.renewsAt !== undefined ? { renewsAt: entry.renewsAt } : {}), period },
-      this.now,
-    ) ?? facts?.renewsAt ?? null;
+    const renewsAt =
+      nextRenewal(
+        {
+          ...(entry?.renewsDay !== undefined ? { renewsDay: entry.renewsDay } : {}),
+          ...(entry?.renewsAt !== undefined ? { renewsAt: entry.renewsAt } : {}),
+          period,
+        },
+        this.now,
+      ) ?? facts?.renewsAt ?? null;
+    // A prepaid term ends, it does not charge: show the paid-through date instead of a renewal.
+    const endsAt = entry?.endsAt === undefined ? null : entry.endsAt;
 
     return {
       provider,
-      plan: facts?.planName ?? known?.name ?? planId ?? "unknown plan",
-      priceUsd,
+      plan: entry?.label ?? facts?.planName ?? known?.name ?? planId ?? "unknown plan",
+      price,
+      priceNext,
+      currency,
       period,
-      monthlyUsd: monthlyPrice(priceUsd, period),
-      renewsAt,
+      monthly: monthlyPrice(priceNext ?? price, period),
+      renewsAt: endsAt === null ? renewsAt : null,
+      endsAt,
       state,
       seats: entry?.seats ?? facts?.seats ?? null,
       source: sourceLabel(entry !== undefined, facts?.source),

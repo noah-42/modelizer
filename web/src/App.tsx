@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   fetchAudit,
   fetchDiary,
@@ -365,6 +365,8 @@ function SubscriptionsView() {
   }, []);
 
   const rows = data?.subscriptions ?? [];
+  // Currencies are never added together: show one figure per currency.
+  const totalLine = data === null ? "" : data.totals.map((t) => money(t.monthly, t.currency)).join(" + ");
   return (
     <>
       <div className="head-line">
@@ -384,7 +386,7 @@ function SubscriptionsView() {
       )}
       {rows.length > 0 && data !== null && (
         <div className="subs-summary">
-          <strong>{fmtUsd(data.totalMonthlyUsd)}</strong>
+          <strong>{totalLine || "—"}</strong>
           <span className="muted">
             per month · {rows.length} subscription{rows.length === 1 ? "" : "s"}
           </span>
@@ -401,6 +403,7 @@ function SubscriptionsView() {
 
 function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   const seats = s.seats !== null && s.seats > 1 ? ` · ${s.seats} seats` : "";
+  const prepaid = s.endsAt !== null;
   return (
     <section className="card">
       <div className="card-head">
@@ -418,25 +421,11 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
       </div>
       <div className="sub-line">
         <span className="muted">monthly cost</span>
-        <span>
-          {s.monthlyUsd === null ? (
-            <span className="muted">set price_usd</span>
-          ) : (
-            <strong>{fmtUsd(s.monthlyUsd)}</strong>
-          )}
-        </span>
+        <span>{monthlyCost(s)}</span>
       </div>
       <div className="sub-line">
-        <span className="muted">next charge</span>
-        <span>
-          {s.renewsAt === null ? (
-            <span className="muted">set renews_day</span>
-          ) : (
-            <span title={s.renewsAt}>
-              {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
-            </span>
-          )}
-        </span>
+        <span className="muted">{prepaid ? "paid through" : "next charge"}</span>
+        <span>{chargeLine(s, tick)}</span>
       </div>
       <div className="sub-line">
         <span className="muted">source</span>
@@ -448,6 +437,45 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
   );
 }
 
+/** What the plan costs per month, plus the amount actually charged this period. */
+function monthlyCost(s: Subscription): ReactNode {
+  if (s.monthly === null) return <span className="muted">set price</span>;
+  if (s.price !== null && s.priceNext !== null && s.priceNext !== s.price) {
+    return (
+      <>
+        <strong>{money(s.monthly, s.currency)}</strong>
+        <span className="muted"> from the next charge · {money(s.price, s.currency)} now</span>
+      </>
+    );
+  }
+  if (s.period === "annual" && s.price !== null) {
+    return (
+      <>
+        <strong>{money(s.monthly, s.currency)}</strong>
+        <span className="muted"> · {money(s.price, s.currency)} a year</span>
+      </>
+    );
+  }
+  return <strong>{money(s.monthly, s.currency)}</strong>;
+}
+
+/** A recurring charge shows its date and countdown; a prepaid term shows when it runs out. */
+function chargeLine(s: Subscription, tick: number): ReactNode {
+  if (s.endsAt !== null) {
+    return (
+      <span title={s.endsAt}>
+        {fmtRenewalDay(s.endsAt)} · ends in {countdown(s.endsAt, tick)}
+      </span>
+    );
+  }
+  if (s.renewsAt === null) return <span className="muted">set renews_day</span>;
+  return (
+    <span title={s.renewsAt}>
+      {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
+    </span>
+  );
+}
+
 function stateTone(state: Subscription["state"]): string {
   if (state === "active") return "good";
   if (state === "trialing") return "warn";
@@ -455,8 +483,18 @@ function stateTone(state: Subscription["state"]): string {
   return "muted-badge";
 }
 
-function fmtUsd(n: number): string {
-  return fmtValue(n, "usd");
+/** Money in its own currency — no conversion happens anywhere in this page. */
+function money(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(2)} ${currency}`;
+  }
 }
 
 /** The charge day is a calendar fact, so read the instant in UTC — not the browser's offset. */

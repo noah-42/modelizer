@@ -45,25 +45,62 @@ describe("loadSubscriptions", () => {
       "[[subscription]]",
       'provider = "claude"',
       'plan = "pro"',
-      "price_usd = 20",
+      "price = 20",
       "renews_day = 13",
       "",
       "[[subscription]]",
       'provider = "cursor"',
-      "price_usd = 240",
+      "price = 240",
       'period = "annual"',
       'state = "active"',
       "seats = 2",
       "",
     ].join("\n"));
     expect(loadSubscriptions(path)).toEqual([
-      { provider: "claude", plan: "pro", priceUsd: 20, renewsDay: 13 },
-      { provider: "cursor", priceUsd: 240, period: "annual", state: "active", seats: 2 },
+      { provider: "claude", plan: "pro", price: 20, renewsDay: 13 },
+      { provider: "cursor", price: 240, period: "annual", state: "active", seats: 2 },
     ]);
   });
 
+  test("parses a euro price with an intro rate and a paid-through date", () => {
+    const path = configFile("eur.toml", [
+      "[[subscription]]",
+      'provider = "xai"',
+      'plan = "supergrok"',
+      'currency = "eur"',
+      "price = 15",
+      "price_next = 30",
+      "",
+      "[[subscription]]",
+      'provider = "zai"',
+      'currency = "EUR"',
+      "price = 36",
+      'period = "annual"',
+      'ends_at = "2027-02-28"',
+      "",
+    ].join("\n"));
+    expect(loadSubscriptions(path)).toEqual([
+      { provider: "xai", plan: "supergrok", currency: "EUR", price: 15, priceNext: 30 },
+      { provider: "zai", currency: "EUR", price: 36, period: "annual", endsAt: "2027-02-28" },
+    ]);
+  });
+
+  test("lets the config name a plan the catalogue does not know", () => {
+    const path = configFile("label.toml", [
+      "[[subscription]]",
+      'provider = "zai"',
+      'label = "GLM Coding (annual)"',
+      "price = 36",
+      'currency = "EUR"',
+      'period = "annual"',
+      "",
+    ].join("\n"));
+    const catalog = new SubscriptionCatalog(loadSubscriptions(path), [], NOW);
+    expect(catalog.list()[0]).toMatchObject({ plan: "GLM Coding (annual)", monthly: 3, currency: "EUR" });
+  });
+
   test("rejects a block without a provider", () => {
-    const path = configFile("no-provider.toml", "[[subscription]]\nprice_usd = 20\n");
+    const path = configFile("no-provider.toml", "[[subscription]]\nprice = 20\n");
     expect(() => loadSubscriptions(path)).toThrow(SubscriptionConfigError);
   });
 
@@ -72,11 +109,18 @@ describe("loadSubscriptions", () => {
     expect(() => loadSubscriptions(path)).toThrow(/renews_day must be an integer 1-31/);
   });
 
-  test("rejects an unknown period or state", () => {
+  test("rejects an unknown period, state or currency", () => {
     const period = configFile("bad-period.toml", '[[subscription]]\nprovider = "claude"\nperiod = "weekly"\n');
     expect(() => loadSubscriptions(period)).toThrow(/period must be monthly or annual/);
     const state = configFile("bad-state.toml", '[[subscription]]\nprovider = "claude"\nstate = "paused"\n');
     expect(() => loadSubscriptions(state)).toThrow(/state must be one of/);
+    const currency = configFile("bad-currency.toml", '[[subscription]]\nprovider = "claude"\ncurrency = "euro"\n');
+    expect(() => loadSubscriptions(currency)).toThrow(/3-letter ISO 4217/);
+  });
+
+  test("rejects a negative price", () => {
+    const path = configFile("neg.toml", '[[subscription]]\nprovider = "claude"\nprice = -1\n');
+    expect(() => loadSubscriptions(path)).toThrow(/price must be >= 0/);
   });
 });
 
@@ -127,17 +171,20 @@ describe("SubscriptionCatalog", () => {
 
   test("merges provider facts with the configured price and renewal day", () => {
     const catalog = new SubscriptionCatalog(
-      [{ provider: "claude", plan: "pro", priceUsd: 20, renewsDay: 13 }],
+      [{ provider: "claude", plan: "pro", price: 20, renewsDay: 13 }],
       [claudeFacts],
       NOW,
     );
     expect(catalog.list()[0]).toEqual({
       provider: "claude",
       plan: "Claude Pro",
-      priceUsd: 20,
+      price: 20,
+      priceNext: null,
+      currency: "USD",
       period: "monthly",
-      monthlyUsd: 20,
+      monthly: 20,
       renewsAt: "2026-11-13T09:00:00.000Z",
+      endsAt: null,
       state: "active",
       seats: null,
       source: "claude-oauth+config",
@@ -146,42 +193,75 @@ describe("SubscriptionCatalog", () => {
   });
 
   test("prices a known plan from the catalogue when config omits the price", () => {
+    const catalog = new SubscriptionCatalog([{ provider: "xai", plan: "supergrok", renewsDay: 21 }], [], NOW);
+    expect(catalog.list()[0]).toMatchObject({ plan: "SuperGrok", price: 30, monthly: 30, state: "unknown" });
+  });
+
+  test("uses the post-intro price for the monthly figure but still reports what is charged now", () => {
     const catalog = new SubscriptionCatalog(
-      [{ provider: "xai", plan: "supergrok", renewsDay: 21 }],
+      [{ provider: "xai", plan: "supergrok", price: 15, priceNext: 30, currency: "EUR" }],
       [],
       NOW,
     );
-    expect(catalog.list()[0]).toMatchObject({ plan: "SuperGrok", priceUsd: 30, monthlyUsd: 30, state: "unknown" });
+    expect(catalog.list()[0]).toMatchObject({ price: 15, priceNext: 30, monthly: 30, currency: "EUR" });
+  });
+
+  test("annualises a prepaid term and reports when it ends instead of a renewal", () => {
+    const catalog = new SubscriptionCatalog(
+      [{ provider: "zai", price: 36, currency: "EUR", period: "annual", endsAt: "2027-02-28" }],
+      [],
+      NOW,
+    );
+    expect(catalog.list()[0]).toMatchObject({ monthly: 3, currency: "EUR", renewsAt: null, endsAt: "2027-02-28" });
+  });
+
+  test("keeps several currencies apart in the totals", () => {
+    const catalog = new SubscriptionCatalog(
+      [
+        { provider: "claude", price: 20, renewsDay: 13 },
+        { provider: "cursor", price: 60 },
+        { provider: "xai", price: 15, priceNext: 30, currency: "EUR" },
+        { provider: "zai", price: 36, currency: "EUR", period: "annual" },
+      ],
+      [claudeFacts],
+      NOW,
+    );
+    expect(catalog.totals()).toEqual([
+      { currency: "USD", monthly: 80 },
+      { currency: "EUR", monthly: 33 },
+    ]);
   });
 
   test("includes a provider that only reports facts, unpriced if the plan is unknown", () => {
     const catalog = new SubscriptionCatalog(
       [],
-      [facts({ provider: "cursor", planId: "pro", planName: "Cursor Pro", state: "active", source: "cursor-api" }),
-       facts({ provider: "xai", planId: "mystery", planName: "Mystery Plan", source: "manual" })],
+      [
+        facts({ provider: "cursor", planId: "pro", planName: "Cursor Pro", state: "active", source: "cursor-api" }),
+        facts({ provider: "xai", planId: "mystery", planName: "Mystery Plan", source: "manual" }),
+      ],
       NOW,
     );
     const rows = catalog.list();
     expect(rows.find((r) => r.provider === "cursor")).toMatchObject({
       plan: "Cursor Pro",
-      priceUsd: 20,
+      price: 20,
       configured: false,
       source: "cursor-api",
     });
-    expect(rows.find((r) => r.provider === "xai")).toMatchObject({ plan: "Mystery Plan", priceUsd: null, monthlyUsd: null });
+    expect(rows.find((r) => r.provider === "xai")).toMatchObject({ plan: "Mystery Plan", price: null, monthly: null });
   });
 
-  test("totals only the rows that have a monthly price, most expensive first", () => {
+  test("sorts the priciest first and leaves unpriced rows last", () => {
     const catalog = new SubscriptionCatalog(
       [
-        { provider: "claude", priceUsd: 20, renewsDay: 13 },
-        { provider: "cursor", priceUsd: 720, period: "annual", renewsDay: 4 },
+        { provider: "claude", price: 20, renewsDay: 13 },
+        { provider: "cursor", price: 720, period: "annual", renewsDay: 4 },
         { provider: "xai", plan: "unknown-plan" },
       ],
       [claudeFacts],
       NOW,
     );
     expect(catalog.list().map((s) => s.provider)).toEqual(["cursor", "claude", "xai"]);
-    expect(catalog.totalMonthlyUsd()).toBe(80);
+    expect(catalog.totals()).toEqual([{ currency: "USD", monthly: 80 }]);
   });
 });

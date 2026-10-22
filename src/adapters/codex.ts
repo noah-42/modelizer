@@ -1,11 +1,12 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnAppServer } from "./codex-app-server";
 import { mergeRateLimits, parseAppServerRateLimits, parseSessionRateLimits } from "./codex-limits";
 import type { CodexRateLimitWindow, CodexRateLimits } from "./codex-limits";
 import { NormalizeError } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
+import type { SubscriptionFacts } from "../subscriptions";
 
 export type { CodexRateLimitWindow, CodexRateLimits };
 
@@ -87,6 +88,93 @@ interface TurnRow {
   const custom = env.CODEX_SESSIONS_DIR;
   const dir = custom && custom.trim() !== "" ? custom : join(homedir(), ".codex", "sessions");
   return dir.replace(/^~/, homedir());
+}
+
+/**
+ * Codex's account file, next to the sessions directory (`~/.codex/auth.json`). Deriving it from
+ * `CODEX_SESSIONS_DIR` keeps tests and mock fixtures hermetic: point the fixtures at a temp dir
+ * and no real account file is ever read.
+ */
+export function authJsonPath(env: Record<string, string | undefined>): string {
+  const custom = env.CODEX_SESSIONS_DIR;
+  const home =
+    custom !== undefined && custom.trim() !== ""
+      ? dirname(custom.trim().replace(/^~/, homedir()))
+      : join(homedir(), ".codex");
+  return join(home, "auth.json");
+}
+
+/** JWTs are base64url; a malformed token is not an error, just no claims. */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const part = token.split(".")[1];
+  if (part === undefined) return null;
+  try {
+    return JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** The plan lives in the id_token, under this namespaced claim. */
+const CHATGPT_AUTH_CLAIM = "https://api.openai.com/auth";
+
+/** What Codex's own login knows about the plan. Deliberately excludes the token and the email. */
+export interface CodexAccountClaims {
+  planType: string | null;
+  /** Populated only when OpenAI states it; null in practice (verified 2026-10-22). */
+  activeUntil: string | null;
+}
+
+/**
+ * Read the plan type out of `auth.json` (`tokens.id_token`). The token is decoded here and
+ * never leaves this function: only the two claim values are returned and archived.
+ */
+export function readCodexClaims(path: string): CodexAccountClaims | null {
+  if (!existsSync(path)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as { tokens?: { id_token?: unknown } };
+    const idToken = raw.tokens?.id_token;
+    if (typeof idToken !== "string" || idToken === "") return null;
+    const payload = decodeJwtPayload(idToken);
+    const claim = payload?.[CHATGPT_AUTH_CLAIM];
+    if (claim === null || typeof claim !== "object" || Array.isArray(claim)) return null;
+    const c = claim as Record<string, unknown>;
+    const planType = typeof c.chatgpt_plan_type === "string" ? c.chatgpt_plan_type : null;
+    const activeUntil = typeof c.chatgpt_subscription_active_until === "string" ? c.chatgpt_subscription_active_until : null;
+    if (planType === null && activeUntil === null) return null;
+    return { planType, activeUntil };
+  } catch {
+    return null;
+  }
+}
+
+const CHATGPT_PLAN_LABELS: Readonly<Record<string, string>> = {
+  plus: "ChatGPT Plus",
+  pro: "ChatGPT Pro",
+  team: "ChatGPT Team",
+  business: "ChatGPT Business",
+  enterprise: "ChatGPT Enterprise",
+};
+
+/**
+ * Plan facts from Codex's own login claims. A ChatGPT account names its plan in the id token;
+ * an API-key login carries no plan, which yields null rather than a guess.
+ */
+export function codexFactsFromClaims(json: unknown): SubscriptionFacts | null {
+  if (json === null || typeof json !== "object" || Array.isArray(json)) return null;
+  const c = json as Record<string, unknown>;
+  const planType = typeof c.planType === "string" ? c.planType.trim().toLowerCase() : null;
+  if (planType === null || planType === "" || planType === "free") return null;
+  return {
+    provider: "codex",
+    planId: planType,
+    planName: CHATGPT_PLAN_LABELS[planType] ?? null,
+    state: "active",
+    period: null,
+    renewsAt: null,
+    seats: null,
+    source: "codex-auth",
+  };
 }
 
 function listSessionFiles(dir: string, now: number): string[] {
@@ -276,6 +364,10 @@ export const codexAdapter: Adapter = {
       text: "Only sessions run on this machine are visible. Totals use Codex's own per-turn total (input including cached + output; reasoning tokens are part of output). Model attribution follows the session's turn_context entries; effort level lives in your Codex config, not the records.",
     },
     {
+      title: "Which plan — for the Subscriptions page",
+      text: "Codex's login file (~/.codex/auth.json) names the ChatGPT plan in its id token (chatgpt_plan_type), so the Subscriptions page reports Plus or Pro from the provider instead of guessing. The price and the charge date are still yours to enter: OpenAI states no billing date locally. Only the plan value is read — the token never leaves the adapter.",
+    },
+    {
       title: "How much is left? Calibrate the budgets",
       text: "OpenAI doesn't publish ChatGPT-plan limits, so 'left' is a personal calibration: run /status inside Codex (the authoritative view), note its % against the tokens/turns here, and set CODEX_SESSION_TOKENS / CODEX_SESSION_TURNS in .env to your effective full-window budgets. Budgets are per model + effort — recalibrate when either changes.",
     },
@@ -308,6 +400,18 @@ export const codexAdapter: Adapter = {
       },
     ];
     if (app.poll) polls.push(app.poll);
+    const claimsPath = authJsonPath(ctx.env);
+    const claims = readCodexClaims(claimsPath);
+    if (claims !== null) {
+      polls.push({
+        endpoint: "auth-claims",
+        url: `file://${claimsPath}`,
+        status: 200,
+        body: JSON.stringify(claims),
+        json: claims,
+        headers: {},
+      });
+    }
     return polls;
   },
 
@@ -379,6 +483,11 @@ export const codexAdapter: Adapter = {
       throw new NormalizeError("codex: no turn usage found in ~/.codex/sessions (last 8 days)");
     }
     return points;
+  },
+
+  subscriptionFacts(polls) {
+    const poll = polls.find((p) => p.endpoint === "auth-claims" && p.status === 200);
+    return poll === undefined ? null : codexFactsFromClaims(poll.json);
   },
 };
 
