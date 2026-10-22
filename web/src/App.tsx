@@ -371,7 +371,7 @@ function SubscriptionsView() {
         <span className="muted">
           {data === null
             ? "loading"
-            : `${fmtUsd(data.totalMonthlyUsd)} per month · price and charge day from ${data.configPath}`}
+            : `updated ${relTime(data.generatedAt, tick)} · price and charge day from ${data.configPath}`}
         </span>
       </div>
       {error && <div className="banner error">Can't reach the modelizer server ({error}).</div>}
