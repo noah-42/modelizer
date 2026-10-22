@@ -670,6 +670,7 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   opencode: "OpenCode",
   freellmapi: "freellmapi.co",
   deepseek: "DeepSeek",
+  moonshot: "Kimi (Moonshot)",
 };
 
 function providerName(id: string): string {
@@ -688,6 +689,7 @@ const PROVIDER_ICONS: Readonly<Record<string, string>> = {
   opencode: "opencode.svg",
   freellmapi: "freellm.svg",
   deepseek: "deepseek.png",
+  moonshot: "moonshot.png",
 };
 
 function ProviderIcon({ id }: { id: string }) {
