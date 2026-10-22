@@ -7,7 +7,7 @@ import {
   cursorAdapter,
   cursorFactsFromProfile,
   cursorStatePath,
-  cursorUsagePoint,
+  cursorPeriodPoint,
   readCursorAccessToken,
 } from "./cursor";
 import type { RawPoll } from "./types";
@@ -24,15 +24,13 @@ const profile = {
   pendingCancellationDate: null,
 };
 
-const usage = {
-  billingCycleStart: "2026-10-01T00:00:00.000Z",
-  billingCycleEnd: "2026-11-01T00:00:00.000Z",
-  membershipType: "premium",
-  isUnlimited: false,
-  individualUsage: {
-    plan: { enabled: true, used: 461, limit: 4615, remaining: 4154, totalPercentUsed: 10 },
-    onDemand: { enabled: false, used: 0, limit: null, remaining: null },
-  },
+/** The weekly period this plan meters on, as Cursor sends it: epoch milliseconds in strings. */
+const period = {
+  billingCycleStart: "1792245679604",
+  billingCycleEnd: "1792850479604",
+  planUsage: { autoPercentUsed: 90.27, apiPercentUsed: 0, totalPercentUsed: 90.27 },
+  enabled: true,
+  displayMessage: "You've used 90% of your included usage",
 };
 
 function poll(json: unknown, status = 200, endpoint = "stripe-profile"): RawPoll {
@@ -105,37 +103,48 @@ describe("cursorAdapter", () => {
     expect(cursorStatePath({})).toContain("Cursor/User/globalStorage/state.vscdb");
   });
 
-  test("reports the billing cycle as a percent quota window", () => {
-    const points = cursorAdapter.normalize([poll(usage, 200, "usage-summary")], NOW.toISOString());
+  test("reports the weekly period as a percent quota window", () => {
+    const points = cursorAdapter.normalize([poll(period, 200, "period-usage")], NOW.toISOString());
     expect(points).toHaveLength(1);
     expect(points[0]).toMatchObject({
       provider: "cursor",
-      label: "cursor-plan-usage",
+      label: "cursor-included-usage",
       kind: "quota",
-      used: 10,
+      used: 90.27,
       limit: 100,
-      remaining: 90,
       unit: "percent",
-      quota_window: "monthly",
-      window_start: "2026-10-01T00:00:00.000Z",
-      reset_at: "2026-11-01T00:00:00.000Z",
+      quota_window: "weekly",
+      window_start: new Date(1792245679604).toISOString(),
+      reset_at: new Date(1792850479604).toISOString(),
       source: "cursor-api",
     });
   });
 
-  test("names a yearly cycle as annual", () => {
-    const yearly = { ...usage, billingCycleEnd: "2027-10-01T00:00:00.000Z" };
-    expect(cursorUsagePoint(yearly, NOW.toISOString())).toMatchObject({ quota_window: "annual" });
+  test("leaves room in the period rather than a negative remainder", () => {
+    expect(cursorPeriodPoint({ ...period, planUsage: { totalPercentUsed: 90 } }, NOW.toISOString())).toMatchObject({
+      remaining: 10,
+    });
+    expect(cursorPeriodPoint({ ...period, planUsage: { totalPercentUsed: 120 } }, NOW.toISOString())).toMatchObject({
+      remaining: 0,
+    });
   });
 
-  test("reports no usage points when the usage poll fails", () => {
+  test("names a monthly period when the plan meters monthly", () => {
+    const monthly = {
+      ...period,
+      billingCycleEnd: String(1792245679604 + 30 * 86_400_000),
+    };
+    expect(cursorPeriodPoint(monthly, NOW.toISOString())).toMatchObject({ quota_window: "monthly" });
+  });
+
+  test("reports no usage points when the period poll fails", () => {
     expect(cursorAdapter.normalize([poll(profile)], NOW.toISOString())).toEqual([]);
-    expect(cursorAdapter.normalize([poll({ message: "nope" }, 401, "usage-summary")], NOW.toISOString())).toEqual([]);
+    expect(cursorAdapter.normalize([poll({ message: "nope" }, 401, "period-usage")], NOW.toISOString())).toEqual([]);
   });
 
-  test("reports nothing rather than a blank window when the response has no cycle", () => {
-    expect(cursorUsagePoint({}, NOW.toISOString())).toBeNull();
-    expect(cursorUsagePoint({ individualUsage: {} }, NOW.toISOString())).toBeNull();
+  test("reports nothing rather than a blank window when the response carries no period", () => {
+    expect(cursorPeriodPoint({}, NOW.toISOString())).toBeNull();
+    expect(cursorPeriodPoint({ planUsage: { totalPercentUsed: 20 } }, NOW.toISOString())).toBeNull();
   });
 
   test("reports facts from a successful profile poll", () => {

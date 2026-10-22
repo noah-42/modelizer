@@ -95,9 +95,23 @@ export class NormalizeError extends Error {}
 /** GET a JSON endpoint and archive status/headers/body verbatim. Never throws on HTTP status. */
 export async function fetchPoll(
   ctx: CollectContext,
-  opts: { endpoint: string; url: string; headers: Record<string, string>; optional?: boolean },
+  opts: {
+    endpoint: string;
+    url: string;
+    headers: Record<string, string>;
+    optional?: boolean;
+    /** Defaults to GET; a Connect/gRPC-style call that only answers POST sets this. */
+    method?: "GET" | "POST";
+    /** Sent as-is, for an endpoint that requires a body. */
+    body?: string | undefined;
+  },
 ): Promise<RawPoll> {
-  const res = await ctx.fetchFn(opts.url, { headers: opts.headers, signal: AbortSignal.timeout(15_000) });
+  const res = await ctx.fetchFn(opts.url, {
+    method: opts.method ?? "GET",
+    body: opts.body,
+    headers: opts.headers,
+    signal: AbortSignal.timeout(15_000),
+  });
   const body = await res.text();
   let json: unknown = null;
   try {

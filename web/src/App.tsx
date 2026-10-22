@@ -41,7 +41,7 @@ const LABELS: Record<string, string> = {
   "codex-weekly-percent": "Weekly window (OpenAI)",
   "codex-5h-turns": "5-hour session turns",
   monthly: "Monthly token pool",
-  "cursor-plan-usage": "Plan usage (Cursor)",
+  "cursor-included-usage": "Included usage (Cursor)",
   "token-window": "Token window",
   mcp: "MCP tool calls",
   "coding-window-by-model": "Window usage",

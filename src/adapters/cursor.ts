@@ -14,15 +14,23 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from 
  * verified 2026-10-22 answers with plan and billing state only:
  *   { membershipType: "pro", subscriptionStatus: "active", isYearlyPlan: false,
  *     pendingCancellationDate: null, … }
- * `GET /auth/usage-summary` (same bearer) answers the included usage for the current billing
- * cycle and the cycle's end, which is the only usage Cursor exposes to this token; it reports no
- * five-hour window and no weekly figure. Price and charge date stay in subscriptions.toml.
+ * `POST /aiserver.v1.DashboardService/GetCurrentPeriodUsage` (same bearer, Connect JSON) is what
+ * the Cursor app itself reads: the included usage for the current period, that period's start and
+ * reset, and the percentage Cursor shows you ("You've used 90% of your included usage"). The
+ * period is weekly on this plan, so the card's front line is the weekly budget.
+ *
+ * `/auth/usage-summary` also answers, but it reports a different, empty bucket (the calendar-month
+ * API allowance, 0 of 4,615), so it is not what gates the week. Price and charge date stay in
+ * subscriptions.toml.
  */
 
 export const CURSOR_PROFILE_URL = "https://api2.cursor.sh/auth/full_stripe_profile";
 export const CURSOR_PROFILE_ENDPOINT = "stripe-profile";
-export const CURSOR_USAGE_URL = "https://api2.cursor.sh/auth/usage-summary";
-export const CURSOR_USAGE_ENDPOINT = "usage-summary";
+export const CURSOR_PERIOD_URL =
+  "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+export const CURSOR_PERIOD_ENDPOINT = "period-usage";
+/** A Connect call needs a body even when the request has no fields. */
+const CONNECT_EMPTY_BODY = "{}";
 /** Cursor reports percentages, never a unit for its absolute included figure, so we show the share. */
 const PERCENT_FULL = 100;
 const ONE_DAY_MS = 86_400_000;
@@ -97,24 +105,25 @@ export function cursorFactsFromProfile(json: unknown): SubscriptionFacts | null 
 }
 
 /**
- * The billing cycle Cursor meters on, as a quota point. `totalPercentUsed` is reported directly, so
- * the absolute `limit` (an undocumented unit) never has to be interpreted.
+ * The included usage for the current period, as a quota point. Cursor reports the share directly
+ * ("You've used 90% of your included usage"), so the point carries the percentage, the period it
+ * belongs to and when that period resets — the three things that decide whether you can keep going.
  */
-export function cursorUsagePoint(json: unknown, capturedAt: string): UsagePoint | null {
-  const plan = planOf(json);
+export function cursorPeriodPoint(json: unknown, capturedAt: string): UsagePoint | null {
   const root = asObject(json);
+  const plan = asObject(root.planUsage);
   const percent = numberOf(plan.totalPercentUsed);
-  const windowStart = isoOf(root.billingCycleStart);
-  const resetAt = isoOf(root.billingCycleEnd);
-  if (percent === null && resetAt === null) return null;
+  const windowStart = isoOfEpoch(root.billingCycleStart);
+  const resetAt = isoOfEpoch(root.billingCycleEnd);
+  if (percent === null || resetAt === null) return null;
   return {
     provider: "cursor",
     kind: "quota",
-    label: "cursor-plan-usage",
+    label: "cursor-included-usage",
     model: null,
     used: percent,
     limit: PERCENT_FULL,
-    remaining: percent === null ? null : Math.max(PERCENT_FULL - percent, 0),
+    remaining: Math.max(PERCENT_FULL - percent, 0),
     unit: "percent",
     window_start: windowStart,
     window_end: resetAt,
@@ -147,16 +156,17 @@ function numberOf(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function isoOf(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+/** This service sends instants as epoch milliseconds in a string, not as ISO dates. */
+function isoOfEpoch(value: unknown): string | null {
+  const ms = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
 }
 
-/** Name the cycle length when it is a calendar month or year, so the card says what it meters. */
+/** Name the period the plan meters on, so a weekly budget is not mistaken for a monthly one. */
 function cadenceOf(start: string | null, end: string | null): string | null {
   if (start === null || end === null) return null;
   const days = (Date.parse(end) - Date.parse(start)) / ONE_DAY_MS;
+  if (days >= 6 && days <= 8) return "weekly";
   if (days >= 27 && days <= 33) return "monthly";
   if (days >= 360 && days <= 370) return "annual";
   return null;
@@ -167,11 +177,14 @@ async function pollWithToken(
   endpoint: string,
   url: string,
   token: string,
+  request: { method: "GET" | "POST"; body?: string | undefined },
 ): Promise<RawPoll> {
   try {
     return await fetchPoll(ctx, {
       endpoint,
       url,
+      method: request.method,
+      body: request.body,
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       optional: true,
     });
@@ -209,8 +222,8 @@ export const cursorAdapter: Adapter = {
 
   notes: [
     {
-      title: "Metered per billing cycle, not per five hours",
-      text: "usage-summary reports the included usage for the current billing cycle and when that cycle ends, which is the reset shown above. Cursor states no five-hour window and no weekly figure to this token, so the card does not invent one. Price and renewal day come from subscriptions.toml.",
+      title: "Weekly included usage",
+      text: "GetCurrentPeriodUsage is the call the Cursor app makes: it states the included usage for the current period, when that period started and when it resets. This plan meters weekly, so the front of the card is the weekly budget; Cursor has no five-hour window. Price and renewal day still come from subscriptions.toml.",
     },
     {
       title: "Where the token comes from",
@@ -223,16 +236,19 @@ export const cursorAdapter: Adapter = {
     const token = readCursorAccessToken(statePath);
     if (token === null) return [tokenMissingPoll(statePath)];
     return Promise.all([
-      pollWithToken(ctx, CURSOR_PROFILE_ENDPOINT, CURSOR_PROFILE_URL, token),
-      pollWithToken(ctx, CURSOR_USAGE_ENDPOINT, CURSOR_USAGE_URL, token),
+      pollWithToken(ctx, CURSOR_PROFILE_ENDPOINT, CURSOR_PROFILE_URL, token, { method: "GET" }),
+      pollWithToken(ctx, CURSOR_PERIOD_ENDPOINT, CURSOR_PERIOD_URL, token, {
+        method: "POST",
+        body: CONNECT_EMPTY_BODY,
+      }),
     ]);
   },
 
-  /** The included usage for the current billing cycle, when that poll succeeded. */
+  /** The included usage for the current period, when that poll succeeded. */
   normalize(polls, capturedAt) {
-    const usage = polls.find((p) => p.endpoint === CURSOR_USAGE_ENDPOINT && p.status === 200);
-    if (usage === undefined) return [];
-    const point = cursorUsagePoint(usage.json, capturedAt);
+    const period = polls.find((p) => p.endpoint === CURSOR_PERIOD_ENDPOINT && p.status === 200);
+    if (period === undefined) return [];
+    const point = cursorPeriodPoint(period.json, capturedAt);
     return point === null ? [] : [point];
   },
 
