@@ -68,6 +68,6 @@ describe("freellmapiAdapter", () => {
   });
 
   test("does not report a provider when the database is missing", () => {
-    expect(freellmapiAdapter.isConfigured({ FREELLMAPI_DB: join(root, "missing.db") })).toBe(false);
+    expect(freellmapiAdapter.isConfigured({ FREELLMAPI_DB: join(root, "missing.db"), FREELLMAPI_CONTAINER: "definitely-missing" })).toBe(false);
   });
 });
