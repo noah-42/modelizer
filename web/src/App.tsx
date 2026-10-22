@@ -245,7 +245,9 @@ function AuditView() {
 
   const sessionLabel = (s: SessionInfo): string => {
     const running = s.stopped_at === null;
-    return `#${s.id} · ${new Date(s.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}${running ? " · running" : ""}`;
+    const started = new Date(s.started_at);
+    const time = started.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return `#${s.id} · ${fmtDay(s.started_at)}, ${time}${running ? " · running" : ""}`;
   };
 
   return (
@@ -322,7 +324,7 @@ function DiaryView() {
       {days?.map((day) => (
         <section key={day.date} className="card diary-day">
           <div className="card-head">
-            <h2>{new Date(day.date + "T12:00:00Z").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}</h2>
+            <h2>{fmtDay(`${day.date}T12:00:00Z`, true)}</h2>
             {(day.warnings > 0 || day.errors > 0) && (
               <div className="badges">
                 {day.errors > 0 && <span className="badge bad">{day.errors} error{day.errors === 1 ? "" : "s"}</span>}
@@ -586,9 +588,22 @@ function money(amount: number, currency: string): string {
   }
 }
 
+/**
+ * A day as it reads on a card: `Sun, Oct 25`. The weekday leads because that answers "when" faster
+ * than a number does. `utc` marks a calendar fact (a charge day) whose instant must not be shifted
+ * by the browser's offset.
+ */
+function fmtDay(iso: string, utc = false): string {
+  const timeZone = utc ? "UTC" : undefined;
+  const d = new Date(iso);
+  const weekday = d.toLocaleDateString(undefined, { timeZone, weekday: "short" });
+  const monthDay = d.toLocaleDateString(undefined, { timeZone, month: "short", day: "numeric" });
+  return `${weekday}, ${monthDay}`;
+}
+
 /** The charge day is a calendar fact, so read the instant in UTC — not the browser's offset. */
 function fmtRenewalDay(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { timeZone: "UTC", month: "short", day: "numeric" });
+  return fmtDay(iso, true);
 }
 
 function diaryValue(en: { used: number | null; limit: number | null; remaining: number | null; unit: string }): string {
@@ -966,6 +981,5 @@ function fmtLocalClock(iso: string): string {
   const d = new Date(iso);
   const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   if (d.toDateString() === new Date().toDateString()) return time;
-  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  return `${date}, ${time}`;
+  return `${fmtDay(iso)}, ${time}`;
 }
