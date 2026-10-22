@@ -133,6 +133,8 @@ export interface Subscription {
   renewsAt: string | null;
   /** Paid-through date of a prepaid term; null when it renews instead. */
   endsAt: string | null;
+  /** True when the plan keeps charging, so it counts toward the monthly total. */
+  recurring: boolean;
   state: SubscriptionState;
   seats: number | null;
   source: string;
@@ -147,7 +149,10 @@ export interface CurrencyTotal {
 export interface SubscriptionsResponse {
   generatedAt: string;
   configPath: string;
+  /** Monthly spend per currency for plans that keep charging. */
   totals: CurrencyTotal[];
+  /** Amortised monthly value of prepaid terms, excluded from `totals`. */
+  prepaid: CurrencyTotal[];
   subscriptions: Subscription[];
   /** Set when subscriptions.toml could not be parsed. */
   error: string | null;

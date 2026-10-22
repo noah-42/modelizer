@@ -42,8 +42,10 @@ export interface SubscriptionsResponse {
   generatedAt: string;
   /** Which file the price/renewal half came from. */
   configPath: string;
-  /** Monthly spend per currency; currencies are never summed together. */
+  /** Monthly spend per currency for plans that keep charging; currencies are never summed. */
   totals: CurrencyTotal[];
+  /** Amortised monthly value of prepaid terms, excluded from `totals`. */
+  prepaid: CurrencyTotal[];
   subscriptions: Subscription[];
   /** Set when subscriptions.toml could not be parsed; the page shows it instead of rows. */
   error: string | null;
@@ -174,6 +176,7 @@ export function buildApi(deps: {
         generatedAt,
         configPath: view.configPath,
         totals: [],
+        prepaid: [],
         subscriptions: [],
         error: view.error,
       };
@@ -183,6 +186,7 @@ export function buildApi(deps: {
       generatedAt,
       configPath: view.configPath,
       totals: view.totals,
+      prepaid: view.prepaid,
       subscriptions: view.rows,
       error: null,
     };
@@ -198,6 +202,7 @@ export function buildApi(deps: {
 interface SubscriptionView {
   rows: Subscription[];
   totals: CurrencyTotal[];
+  prepaid: CurrencyTotal[];
   configPath: string;
   error: string | null;
 }
@@ -213,10 +218,16 @@ function readSubscriptions(db: Db, env: Record<string, string | undefined>, at: 
     const entries = loadSubscriptions(configPath);
     const facts = db.getSubscriptionFacts().map((row) => row.facts);
     const catalog = new SubscriptionCatalog(entries, facts, at);
-    return { rows: catalog.list(), totals: catalog.totals(), configPath, error: null };
+    return {
+      rows: catalog.list(),
+      totals: catalog.totals(),
+      prepaid: catalog.prepaidTotals(),
+      configPath,
+      error: null,
+    };
   } catch (err) {
     const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
-    return { rows: [], totals: [], configPath, error: message };
+    return { rows: [], totals: [], prepaid: [], configPath, error: message };
   }
 }
 

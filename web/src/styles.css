@@ -483,6 +483,11 @@ code {
 .subs-summary strong {
   font-variant-numeric: tabular-nums;
 }
+/* Sits under the total, explaining what the total leaves out. */
+.subs-prepaid {
+  margin: -6px 0 12px;
+  font-size: 13px;
+}
 .sub-plan {
   margin: 2px 0 10px;
   font-size: 13px;

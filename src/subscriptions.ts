@@ -78,6 +78,11 @@ export interface Subscription {
   renewsAt: string | null;
   /** Paid-through date for a prepaid term; null when it renews instead. */
   endsAt: string | null;
+  /**
+   * True when the plan keeps charging, so it belongs in the monthly total. A prepaid term does
+   * not: its monthly figure is an amortisation of one payment already made, not a monthly bill.
+   */
+  recurring: boolean;
   state: SubscriptionState;
   seats: number | null;
   /** `config`, the provider source, or `<source>+config`. */
@@ -308,16 +313,17 @@ export class SubscriptionCatalog {
       .sort((a, b) => (b.monthly ?? -1) - (a.monthly ?? -1) || (a.provider < b.provider ? -1 : 1));
   }
 
-  /** Monthly spend per currency. Currencies are never summed together. */
+  /**
+   * Monthly spend per currency for plans that keep charging — what actually leaves the account
+   * every month. Prepaid terms are amortised separately by `prepaidTotals()`.
+   */
   totals(): CurrencyTotal[] {
-    const byCurrency = new Map<string, number>();
-    for (const s of this.list()) {
-      if (s.monthly === null) continue;
-      byCurrency.set(s.currency, (byCurrency.get(s.currency) ?? 0) + s.monthly);
-    }
-    return [...byCurrency.entries()]
-      .map(([currency, monthly]) => ({ currency, monthly: Number(monthly.toFixed(2)) }))
-      .sort((a, b) => b.monthly - a.monthly);
+    return sumByCurrency(this.list().filter((s) => s.recurring));
+  }
+
+  /** Amortised monthly value of prepaid terms (one payment spread over its term). */
+  prepaidTotals(): CurrencyTotal[] {
+    return sumByCurrency(this.list().filter((s) => !s.recurring));
   }
 
   private merge(provider: string): Subscription {
@@ -352,6 +358,7 @@ export class SubscriptionCatalog {
       monthly: monthlyPrice(priceNext ?? price, period),
       renewsAt: endsAt === null ? renewsAt : null,
       endsAt,
+      recurring: endsAt === null,
       state,
       seats: entry?.seats ?? facts?.seats ?? null,
       source: sourceLabel(entry !== undefined, facts?.source),
@@ -363,4 +370,16 @@ export class SubscriptionCatalog {
 function sourceLabel(configured: boolean, factSource: string | undefined): string {
   if (factSource === undefined) return "config";
   return configured ? `${factSource}+config` : factSource;
+}
+
+/** Currencies are never added together: one figure per currency, unpriced rows skipped. */
+function sumByCurrency(rows: readonly Subscription[]): CurrencyTotal[] {
+  const byCurrency = new Map<string, number>();
+  for (const row of rows) {
+    if (row.monthly === null) continue;
+    byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0) + row.monthly);
+  }
+  return [...byCurrency.entries()]
+    .map(([currency, monthly]) => ({ currency, monthly: Number(monthly.toFixed(2)) }))
+    .sort((a, b) => b.monthly - a.monthly);
 }

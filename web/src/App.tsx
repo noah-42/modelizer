@@ -365,8 +365,11 @@ function SubscriptionsView() {
   }, []);
 
   const rows = data?.subscriptions ?? [];
-  // Currencies are never added together: show one figure per currency.
+  const prepaidRows = rows.filter((s) => !s.recurring);
+  const recurringCount = rows.length - prepaidRows.length;
+  // Currencies are never added together: one figure per currency.
   const totalLine = data === null ? "" : data.totals.map((t) => money(t.monthly, t.currency)).join(" + ");
+  const prepaidLine = data === null ? "" : data.prepaid.map((t) => money(t.monthly, t.currency)).join(" + ");
   return (
     <>
       <div className="head-line">
@@ -388,8 +391,13 @@ function SubscriptionsView() {
         <div className="subs-summary">
           <strong>{totalLine || "—"}</strong>
           <span className="muted">
-            per month · {rows.length} subscription{rows.length === 1 ? "" : "s"}
+            per month · {recurringCount} recurring plan{recurringCount === 1 ? "" : "s"}
           </span>
+        </div>
+      )}
+      {prepaidRows.length > 0 && data !== null && (
+        <div className="subs-prepaid muted">
+          {prepaidLine || "—"} a month of prepaid plans is not counted above · {prepaidNote(prepaidRows)}
         </div>
       )}
       <div className="cards">
@@ -435,6 +443,17 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
       </div>
     </section>
   );
+}
+
+/** Prepaid terms amortise to a monthly figure, but they are not a monthly charge — name them. */
+function prepaidNote(rows: Subscription[]): string {
+  return rows
+    .map((s) => {
+      const yearly = s.price === null ? "unpriced" : `${money(s.price, s.currency)} a year`;
+      const until = s.endsAt === null ? "" : `, paid through ${fmtRenewalDay(s.endsAt)}`;
+      return `${s.plan} — ${yearly}${until}`;
+    })
+    .join(" · ");
 }
 
 /** What the plan costs per month, plus the amount actually charged this period. */

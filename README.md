@@ -50,8 +50,9 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 - `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
   undocumented endpoint drifts)
 - `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
-  `price`, `priceNext`, `currency`, `monthly`, `renewsAt`/`endsAt`, `source`, plus `totals[]`
-  (monthly spend **per currency** — USD and EUR are never added together). A malformed
+  `price`, `priceNext`, `currency`, `monthly`, `recurring`, `renewsAt`/`endsAt`, `source`, plus
+  `totals[]` (recurring monthly spend **per currency** — USD and EUR are never added together) and
+  `prepaid[]` (the amortised monthly value of prepaid terms, kept out of `totals[]`). A malformed
   `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
 
 ## Subscriptions
@@ -75,7 +76,9 @@ separately from dollars, because converting would invent an exchange rate. `pric
 intro rate (charged 15 now, 30 from the next renewal): the row shows both, the total uses the
 recurring amount. `renews_day` is a day of month (clamped in short months), `renews_at` rolls an
 annual charge forward, and `ends_at` marks a prepaid term that simply runs out — shown as "paid
-through" rather than a renewal.
+through" rather than a renewal. A prepaid term is not a monthly charge, so its amortised figure
+sits under the total instead of inside it: the header counts only what leaves the account each
+month.
 
 One row per provider, so a plan that is billed under one provider id gets one block: a Cursor
 subscription charged in euros is still `provider = "cursor"`, with `currency`/`price` overriding

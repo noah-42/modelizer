@@ -199,6 +199,7 @@ describe("SubscriptionCatalog", () => {
       monthly: 20,
       renewsAt: "2026-11-13T09:00:00.000Z",
       endsAt: null,
+      recurring: true,
       state: "active",
       seats: null,
       source: "claude-oauth+config",
@@ -226,10 +227,16 @@ describe("SubscriptionCatalog", () => {
       [],
       NOW,
     );
-    expect(catalog.list()[0]).toMatchObject({ monthly: 3, currency: "EUR", renewsAt: null, endsAt: "2027-02-28" });
+    expect(catalog.list()[0]).toMatchObject({
+      monthly: 3,
+      currency: "EUR",
+      renewsAt: null,
+      endsAt: "2027-02-28",
+      recurring: false,
+    });
   });
 
-  test("keeps several currencies apart in the totals", () => {
+  test("counts an annual plan that renews, since it charges again", () => {
     const catalog = new SubscriptionCatalog(
       [
         { provider: "claude", price: 20, renewsDay: 13 },
@@ -244,6 +251,24 @@ describe("SubscriptionCatalog", () => {
       { currency: "USD", monthly: 80 },
       { currency: "EUR", monthly: 33 },
     ]);
+    expect(catalog.prepaidTotals()).toEqual([]);
+  });
+
+  test("leaves a prepaid term out of the monthly total but still reports it", () => {
+    const catalog = new SubscriptionCatalog(
+      [
+        { provider: "cursor", label: "Premium", currency: "EUR", price: 15.5, priceNext: 31, renewsDay: 17 },
+        { provider: "claude", currency: "EUR", price: 21.42, renewsDay: 6 },
+        { provider: "zai", currency: "EUR", price: 36, period: "annual", endsAt: "2027-02-28" },
+      ],
+      [],
+      NOW,
+    );
+    // 31 + 21.42: what actually leaves the account every month, without the prepaid €3.
+    expect(catalog.totals()).toEqual([{ currency: "EUR", monthly: 52.42 }]);
+    expect(catalog.prepaidTotals()).toEqual([{ currency: "EUR", monthly: 3 }]);
+    expect(catalog.list().find((s) => s.provider === "zai")).toMatchObject({ recurring: false, monthly: 3 });
+    expect(catalog.list().find((s) => s.provider === "claude")).toMatchObject({ recurring: true });
   });
 
   test("includes a provider that only reports facts, unpriced if the plan is unknown", () => {
