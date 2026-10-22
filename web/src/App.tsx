@@ -898,7 +898,7 @@ function ProviderCard({
           <span className="status-dot" />
           <span>
             {friendlyLabel(w.label)}{" "}
-            {w.used !== null ? `${fmtValue(w.used, w.unit)} used · ` : ""}
+            {w.used !== null ? `${fmtValue(w.used, w.unit)}${w.unit === "tokens" ? " tokens" : ""} used · ` : ""}
             {w.reset_at === null ? (
               <span className="muted">
                 {windowIsIdle(w)
