@@ -179,13 +179,19 @@ async function pollWithToken(
   token: string,
   request: { method: "GET" | "POST"; body?: string | undefined },
 ): Promise<RawPoll> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${token}`,
+    accept: "application/json",
+  };
+  // A Connect call without a JSON content type is refused with 415 before it is routed.
+  if (request.body !== undefined) headers["content-type"] = "application/json";
   try {
     return await fetchPoll(ctx, {
       endpoint,
       url,
       method: request.method,
       body: request.body,
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      headers,
       optional: true,
     });
   } catch (err) {
