@@ -216,7 +216,7 @@ export async function fetchModels(): Promise<ModelsResponse> {
 }
 
 /** Add a model to the catalogue from its OpenRouter link; the server fills in the details. */
-export async function addModel(url: string): Promise<LlmModel> {
+export async function addModel(url: string, provider?: string): Promise<LlmModel> {
   const res = await fetch("/api/models", {
     method: "POST",
     headers: { "content-type": "application/json" },

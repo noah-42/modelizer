@@ -365,6 +365,7 @@ function ModelsView() {
   const [models, setModels] = useState<LlmModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
+  const [provider, setProvider] = useState("openrouter");
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
 
@@ -387,7 +388,7 @@ function ModelsView() {
     setError(null);
     setAdded(null);
     try {
-      const model = await addModel(url.trim());
+      const model = await addModel(url.trim(), provider);
       setUrl("");
       setAdded(`${model.name} added`);
       await load();
@@ -413,6 +414,19 @@ function ModelsView() {
         </span>
       </div>
       <div className="card model-add">
+        <select
+          className="model-provider"
+          value={provider}
+          onChange={(e) => setProvider(e.target.value)}
+          aria-label="provider the model is served by"
+          title="who serves this model — decides the section it lands in"
+        >
+          {Object.keys(PROVIDER_NAMES).map((id) => (
+            <option key={id} value={id}>
+              {providerName(id)}
+            </option>
+          ))}
+        </select>
         <input
           className="model-url"
           type="url"
@@ -655,6 +669,7 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   openrouter: "Open Router",
   opencode: "OpenCode",
   freellmapi: "freellmapi.co",
+  deepseek: "DeepSeek",
 };
 
 function providerName(id: string): string {

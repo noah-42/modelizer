@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadModels, ModelExistsError, appendModel, ModelCatalog } from "./models";
-import { modelFromCatalogue, parseModelRef } from "./openrouter";
+import { modelFromCatalogue, normalizeProviderId, parseModelRef } from "./openrouter";
 
 describe("parseModelRef", () => {
   test("reads the id from a model page link", () => {
@@ -36,6 +36,23 @@ describe("parseModelRef", () => {
     expect(() => parseModelRef("https://openrouter.ai/models")).toThrow(/exactly one model|like/);
     expect(() => parseModelRef("https://openrouter.ai/a/b/c")).toThrow();
     expect(() => parseModelRef("   ")).toThrow(/paste an OpenRouter model link/);
+  });
+});
+
+describe("normalizeProviderId", () => {
+  test("defaults to Open Router when no provider is given", () => {
+    expect(normalizeProviderId(undefined)).toBe("openrouter");
+    expect(normalizeProviderId("  ")).toBe("openrouter");
+  });
+
+  test("accepts the providers a section can be filed under", () => {
+    expect(normalizeProviderId("DeepSeek")).toBe("deepseek");
+    expect(normalizeProviderId(" cursor ")).toBe("cursor");
+  });
+
+  test("refuses ids that would not survive as a TOML key or heading", () => {
+    expect(() => normalizeProviderId("has space")).toThrow(/not a provider id/);
+    expect(() => normalizeProviderId("-leading")).toThrow();
   });
 });
 

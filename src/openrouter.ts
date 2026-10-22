@@ -23,6 +23,22 @@ export interface OpenRouterRef {
 export class OpenRouterUrlError extends Error {}
 export class OpenRouterUnknownModelError extends Error {}
 
+/** Provider ids end up as TOML keys and section headings, so they stay short and plain. */
+const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+
+/**
+ * The provider a catalogue entry is filed under. A link alone says nothing about who serves the
+ * model — DeepSeek sells direct and through routers — so the choice is yours, with a default.
+ */
+export function normalizeProviderId(input: string | undefined): string {
+  const id = (input ?? "").trim().toLowerCase();
+  if (id === "") return OPENROUTER_PROVIDER;
+  if (!PROVIDER_ID_PATTERN.test(id)) {
+    throw new OpenRouterUrlError(`"${input}" is not a provider id — use letters, digits, - or _`);
+  }
+  return id;
+}
+
 const HOSTS = new Set(["openrouter.ai", "www.openrouter.ai"]);
 /** Model pages sit at the root; listing pages prefix the path with this segment. */
 const LIST_PATH = "models";

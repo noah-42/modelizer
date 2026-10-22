@@ -21,6 +21,7 @@ import {
 } from "./models";
 import {
   fetchOpenRouterModel,
+  normalizeProviderId,
   OpenRouterUnknownModelError,
   OpenRouterUrlError,
   parseModelRef,
@@ -236,11 +237,13 @@ export function buildApi(deps: {
    * field written to models.toml comes from OpenRouter's catalogue endpoint.
    */
   app.post("/api/models", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { url?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as { url?: unknown; provider?: unknown } | null;
     const input = typeof body?.url === "string" ? body.url : "";
+    const provider = typeof body?.provider === "string" ? body.provider : undefined;
     const path = modelsPath();
     try {
       const model = await fetchOpenRouterModel(parseModelRef(input), fetchFn);
+      model.provider = normalizeProviderId(provider);
       appendModel(model, path);
       return c.json({ model, path }, 201);
     } catch (err) {
