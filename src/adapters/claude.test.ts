@@ -703,6 +703,7 @@ describe("claude API-equivalent cost", () => {
       day: "2026-10-06",
       cost_usd: 4,
       used: null,
+      source: "pricing",
     });
   });
 });

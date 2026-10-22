@@ -353,25 +353,53 @@ function statusOf(p: OverviewProvider): { label: string; className: string } {
 }
 
 /** Aggregate per-model daily history (tokens or spend) into today/total totals, busiest first. */
-function modelRows(
-  points: UsagePoint[],
-): Array<{ label: string; model: string; unit: UsagePoint["unit"]; today: number; total: number }> {
+interface ModelRow {
+  label: string;
+  model: string;
+  unit: UsagePoint["unit"];
+  today: number;
+  total: number;
+  /** Cost derived from list prices rather than reported by the provider. */
+  equivalent: boolean;
+}
+
+function modelRows(points: UsagePoint[]): ModelRow[] {
   const todayStr = new Date().toISOString().slice(0, 10);
-  const by = new Map<
-    string,
-    { label: string; model: string; unit: UsagePoint["unit"]; today: number; total: number }
-  >();
+  const by = new Map<string, ModelRow>();
   for (const pt of points) {
     if (!pt.model || pt.day === null) continue;
     if (pt.label !== "model-daily" && pt.label !== "model-spend") continue;
     const value = pt.used ?? pt.cost_usd ?? 0;
     const key = `${pt.label}|${pt.model}`;
-    const cur = by.get(key) ?? { label: pt.label, model: pt.model, unit: pt.unit, today: 0, total: 0 };
+    const cur = by.get(key) ?? {
+      label: pt.label,
+      model: pt.model,
+      unit: pt.unit,
+      today: 0,
+      total: 0,
+      equivalent: pt.source === "pricing",
+    };
     cur.total += value;
     if (pt.day === todayStr) cur.today += value;
     by.set(key, cur);
   }
   return [...by.values()].sort((a, b) => b.total - a.total);
+}
+
+/** One row per model: today's figure first, then the recorded total in the same unit. */
+function ModelTable({ rows, suffix }: { rows: ModelRow[]; suffix: string }) {
+  return (
+    <>
+      {rows.map((m) => (
+        <div key={`${m.label}/${m.model}`} className="model-row">
+          <span className="model-name">{m.model}</span>
+          <span className="model-nums">
+            <strong>{fmtValue(m.today, m.unit)}</strong> today · {fmtValue(m.total, m.unit)} {suffix}
+          </span>
+        </div>
+      ))}
+    </>
+  );
 }
 
 function ProviderCard({
@@ -431,36 +459,44 @@ function ProviderCard({
       )}
       {(() => {
         const rows = modelRows(p.points);
-        const isSpend = rows[0]?.label === "model-spend";
+        const tokenRows = rows.filter((r) => r.label === "model-daily");
+        const spendRows = rows.filter((r) => r.label === "model-spend");
+        const spendIsEquivalent = spendRows.length > 0 && spendRows.every((r) => r.equivalent);
         const feedFailed = p.degradedEndpoints.find(
           (d) => d.endpoint === "model-usage" || d.endpoint === "activity",
         );
         const feedName = feedFailed?.endpoint === "activity" ? "spend" : "token usage";
         if (rows.length === 0 && feedFailed === undefined) return null;
+        const degraded = feedFailed !== undefined && (
+          <span className="degraded-note" title={`${feedFailed.endpoint} endpoint failed at ${p.lastSuccess ?? "?"}`}>
+            {" "}
+            ⚠ {feedName} check failed (HTTP {feedFailed.status}) — data below may be stale
+          </span>
+        );
         return (
-          <details className="notes models">
-            <summary>
-              {isSpend ? "Per-model spend · 30 days" : "Per-model usage · 7 days"}
-              {feedFailed !== undefined && (
-                <span className="degraded-note" title={`${feedFailed.endpoint} endpoint failed at ${p.lastSuccess ?? "?"}`}>
-                  {" "}
-                  ⚠ {feedName} check failed (HTTP {feedFailed.status}) — data below may be stale
-                </span>
-              )}
-            </summary>
+          <>
+            {tokenRows.length > 0 && (
+              <details className="notes models">
+                <summary>
+                  Per-model usage · 7 days
+                  {feedFailed?.endpoint === "model-usage" && degraded}
+                </summary>
+                <ModelTable rows={tokenRows} suffix="7d" />
+              </details>
+            )}
+            {spendRows.length > 0 && (
+              <details className="notes models">
+                <summary>
+                  {spendIsEquivalent ? "Per-model spend · API-equivalent" : "Per-model spend · 30 days"}
+                  {feedFailed?.endpoint === "activity" && degraded}
+                </summary>
+                <ModelTable rows={spendRows} suffix={spendIsEquivalent ? "recorded" : "30d"} />
+              </details>
+            )}
             {rows.length === 0 && feedFailed !== undefined && (
               <p className="note">No {feedName} data — the {feedFailed.endpoint} endpoint is failing.</p>
             )}
-            {rows.map((m) => (
-              <div key={`${m.label}/${m.model}`} className="model-row">
-                <span className="model-name">{m.model}</span>
-                <span className="model-nums">
-                  <strong>{fmtValue(m.today, m.unit)}</strong> today · {fmtValue(m.total, m.unit)}{" "}
-                  {isSpend ? "30d" : "7d"}
-                </span>
-              </div>
-            ))}
-          </details>
+          </>
         );
       })()}
       {p.notes.length > 0 && (

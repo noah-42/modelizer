@@ -577,6 +577,7 @@ export const claudeAdapter: Adapter = {
           model: d.model,
           day: d.day,
           cost_usd: d.costUsd,
+          source: "pricing",
         }));
       }
     }
