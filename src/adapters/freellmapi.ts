@@ -148,6 +148,8 @@ function normalizeSnapshot(snapshot: FreeLlmApiSnapshot, capturedAt: string): Us
     return quota === null ? [point] : [point, quota];
   });
   const currentDay = capturedAt.slice(0, 10);
+  const currentRows = snapshot.usage.filter((row) => row.day === currentDay);
+  points.push(dailyAggregatePoint(currentRows, capturedAt, currentDay));
   for (const model of snapshot.models) {
     const modelId = `${model.platform}/${model.model_id}`;
     const currentUsage = snapshot.usage.find((row) => row.day === currentDay && `${row.platform}/${row.model_id}` === modelId);
@@ -156,6 +158,33 @@ function normalizeSnapshot(snapshot: FreeLlmApiSnapshot, capturedAt: string): Us
     }
   }
   return points;
+}
+
+function dailyAggregatePoint(rows: UsageRow[], capturedAt: string, day: string): UsagePoint {
+  const used = rows.reduce((total, row) => total + row.tokens_in + row.tokens_out, 0);
+  const requests = rows.reduce((total, row) => total + row.requests, 0);
+  return {
+    provider: PROVIDER_ID,
+    kind: "quota",
+    label: "freellmapi-daily-pool",
+    model: null,
+    used,
+    limit: null,
+    remaining: null,
+    unit: "tokens",
+    window_start: `${day}T00:00:00.000Z`,
+    window_end: `${day}T23:59:59.999Z`,
+    reset_at: nextDay(day),
+    day: null,
+    requests,
+    tokens_in: rows.reduce((total, row) => total + row.tokens_in, 0),
+    tokens_out: rows.reduce((total, row) => total + row.tokens_out, 0),
+    cost_usd: null,
+    captured_at: capturedAt,
+    source: "freellmapi-db",
+    quota_window: "daily",
+    stale: false,
+  };
 }
 
 function usagePoint(row: UsageRow, capturedAt: string, model: string): UsagePoint {

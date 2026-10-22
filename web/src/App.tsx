@@ -43,6 +43,7 @@ const LABELS: Record<string, string> = {
   "codex-5h-turns": "5-hour session turns",
   monthly: "Monthly token pool",
   "cursor-included-usage": "Included usage (Cursor)",
+  "freellmapi-daily-pool": "Daily usage (FreeLLMAPI)",
   "token-window": "Token window",
   mcp: "MCP tool calls",
   "coding-window-by-model": "Window usage",
@@ -897,7 +898,7 @@ function ProviderCard({
           <span className="status-dot" />
           <span>
             {friendlyLabel(w.label)}{" "}
-            {w.used !== null && w.unit === "percent" ? `${fmtValue(w.used, w.unit)} used · ` : ""}
+            {w.used !== null ? `${fmtValue(w.used, w.unit)} used · ` : ""}
             {w.reset_at === null ? (
               <span className="muted">
                 {windowIsIdle(w)
@@ -995,7 +996,9 @@ function windowsAboveTheFold(p: OverviewProvider): UsagePoint[] {
     p.points.filter((pt) => pt.day === null && pt.quota_window === window),
   );
   if (gating.length > 0) return gating;
-  return p.points.filter((pt) => pt.day === null && pt.kind === "quota" && pt.reset_at !== null);
+  return p.points.filter(
+    (pt) => pt.kind === "quota" && pt.reset_at !== null && (pt.day === null || pt.label === "freellmapi-daily-pool"),
+  );
 }
 
 /**
