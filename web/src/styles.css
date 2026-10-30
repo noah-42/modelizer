@@ -150,6 +150,31 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+.model-order {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.model-remove {
+  margin-left: 0;
+}
+.order-btn {
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: pointer;
+}
+.order-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.order-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 13px;

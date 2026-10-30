@@ -2,7 +2,15 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadModels, ModelCatalog, ModelConfigError, ModelNotFoundError, removeModel, type LlmModel } from "./models";
+import {
+  loadModels,
+  ModelCatalog,
+  ModelConfigError,
+  ModelNotFoundError,
+  removeModel,
+  setModelOrder,
+  type LlmModel,
+} from "./models";
 
 const root = mkdtempSync(join(tmpdir(), "modelizer-models-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -163,5 +171,73 @@ describe("removeModel", () => {
     const path = configFile("remove-parse.toml", `${original}\n`);
     removeModel("gpt-6-luna", path);
     expect(loadModels(path)).toEqual([{ id: "claude-opus-5-5", name: "claude-opus-5-5", provider: "claude" }]);
+  });
+});
+
+describe("setModelOrder", () => {
+  const original = [
+    "[[model]]",
+    'id = "alpha"',
+    'name = "Alpha"',
+    'provider = "claude"',
+    "",
+    "[[model]]",
+    'id = "beta"',
+    'name = "Beta"',
+    "context_length = 262144 # hand-noted",
+    'provider = "codex"',
+    "",
+    "[[model]]",
+    'id = "gamma"',
+    'provider = "zai"',
+    "",
+  ].join("\n");
+
+  test("numbers the listed ids in sequence and leaves other blocks byte-identical", () => {
+    const path = configFile("order.toml", `${original}\n`);
+    setModelOrder(["gamma", "alpha", "beta"], path);
+    const text = readFileSync(path, "utf8");
+    expect(text).toContain('id = "gamma"\norder = 1\nprovider = "zai"');
+    expect(text).toContain('id = "alpha"\norder = 2\nname = "Alpha"');
+    expect(text).toContain("context_length = 262144 # hand-noted\nprovider = \"codex\"");
+    expect(text.match(/^\s*order\s*=/gm)).toHaveLength(3);
+    expect(new ModelCatalog(loadModels(path)).list().map((m) => m.id)).toEqual(["gamma", "alpha", "beta"]);
+  });
+
+  test("replaces an existing order line instead of adding a second one", () => {
+    const path = configFile(
+      "order-again.toml",
+      '[[model]]\nid = "alpha"\nprovider = "claude"\norder = 9\n',
+    );
+    setModelOrder(["alpha"], path);
+    const text = readFileSync(path, "utf8");
+    expect(text.match(/^\s*order\s*=/gm)).toHaveLength(1);
+    expect(loadModels(path)[0]?.order).toBe(1);
+  });
+
+  test("unlisted models keep their order and sort after ranked ones, by name", () => {
+    const path = configFile(
+      "order-partial.toml",
+      [
+        "[[model]]",
+        'id = "a-one"',
+        'name = "Zed"',
+        'provider = "claude"',
+        "",
+        "[[model]]",
+        'id = "b-two"',
+        'name = "Beta"',
+        'provider = "claude"',
+        "",
+      ].join("\n"),
+    );
+    setModelOrder(["b-two"], path);
+    expect(new ModelCatalog(loadModels(path)).list().map((m) => m.id)).toEqual(["b-two", "a-one"]);
+  });
+
+  test("refuses unknown ids and leaves the file alone", () => {
+    const path = configFile("order-miss.toml", `${original}\n`);
+    expect(() => setModelOrder(["alpha", "mystery"], path)).toThrow(ModelNotFoundError);
+    expect(readFileSync(path, "utf8")).toBe(`${original}\n`);
   });
 });

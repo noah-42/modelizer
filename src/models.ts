@@ -28,6 +28,8 @@ export interface LlmModel {
   promptUsdPerMTok?: number | undefined;
   /** USD per million completion tokens. */
   completionUsdPerMTok?: number | undefined;
+  /** Display rank: lower shows earlier. Unset models follow, alphabetically by name. */
+  order?: number | undefined;
 }
 
 export class ModelConfigError extends Error {}
@@ -77,6 +79,7 @@ function parseEntry(block: unknown, index: number, path: string): LlmModel {
     contextLength: optionalNumber(b.context_length, `${where}: context_length`),
     promptUsdPerMTok: optionalNumber(b.prompt_usd_per_mtok, `${where}: prompt_usd_per_mtok`),
     completionUsdPerMTok: optionalNumber(b.completion_usd_per_mtok, `${where}: completion_usd_per_mtok`),
+    order: optionalNumber(b.order, `${where}: order`),
   };
 }
 
@@ -170,6 +173,85 @@ export function removeModel(id: string, path = DEFAULT_MODELS_PATH): void {
   renameSync(temporary, path);
 }
 
+/**
+ * Set the display order of the given ids, in the sequence given: the first id gets `order = 1`,
+ * the second `order = 2`, and so on. Ids not listed keep whatever they have. Each `[[model]]`
+ * block is edited textually — the `order` line is replaced in place or inserted right after the
+ * id line — so comments, field order and hand-added fields survive untouched. Written to a
+ * temporary sibling and renamed into place, like appending and removing.
+ */
+export function setModelOrder(ids: string[], path = DEFAULT_MODELS_PATH): void {
+  const targets = new Map<string, number>();
+  ids.forEach((id, index) => {
+    const key = modelKey(id);
+    if (key !== "" && !targets.has(key)) targets.set(key, index + 1);
+  });
+  if (targets.size === 0) return;
+  const lines = readTextOrEmpty(path).split("\n");
+  const next: string[] = [];
+  let written = 0;
+  let block: string[] | null = null;
+  let blockId: string | null = null;
+  let orderLineSeen = false;
+  let idLineAt = -1;
+  const flush = () => {
+    if (block === null) return;
+    if (blockId !== null && targets.has(blockId)) {
+      const rank = targets.get(blockId) as number;
+      let body: string[];
+      if (orderLineSeen) {
+        body = block.map((line) => (/^\s*order\s*=/.test(line) ? `order = ${rank}` : line));
+      } else {
+        // Insert right after the id line so the rank sits inside the entry, not after its
+        // trailing blank line.
+        body = [...block];
+        body.splice(idLineAt + 1, 0, `order = ${rank}`);
+      }
+      next.push(...body);
+      written += 1;
+    } else {
+      next.push(...block);
+    }
+    block = null;
+    blockId = null;
+    orderLineSeen = false;
+    idLineAt = -1;
+  };
+  for (const line of lines) {
+    if (line.trim() === "[[model]]") {
+      flush();
+      block = [line];
+      blockId = null;
+    } else if (block !== null) {
+      if (blockId === null) {
+        const match = /^\s*id\s*=\s*(['"])(.*)\1\s*$/.exec(line);
+        if (match !== null) {
+          blockId = modelKey(match[2] ?? "");
+          idLineAt = block.length; // insert position once the block is flushed
+        }
+      }
+      block.push(line);
+      if (/^\s*order\s*=/.test(line)) orderLineSeen = true;
+    } else {
+      next.push(line);
+    }
+  }
+  flush();
+  if (written < targets.size) {
+    const present = new Set(lines.map((line) => modelKey(idOfIdLine(line))).filter((key) => key !== ""));
+    const missing = [...targets.keys()].filter((key) => !present.has(key));
+    throw new ModelNotFoundError(`${path}: not in the catalogue: ${missing.join(", ")}`);
+  }
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, next.join("\n"), { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function idOfIdLine(line: string): string {
+  const match = /^\s*id\s*=\s*(['"])(.*)\1\s*$/.exec(line);
+  return match === null ? "" : (match[2] ?? "");
+}
+
 function readTextOrEmpty(path: string): string {
   try {
     return readFileSync(path, "utf8");
@@ -188,6 +270,7 @@ function serializeModel(model: LlmModel, path: string): string {
   if (model.contextLength !== undefined) lines.push(`context_length = ${model.contextLength}`);
   if (model.promptUsdPerMTok !== undefined) lines.push(`prompt_usd_per_mtok = ${model.promptUsdPerMTok}`);
   if (model.completionUsdPerMTok !== undefined) lines.push(`completion_usd_per_mtok = ${model.completionUsdPerMTok}`);
+  if (model.order !== undefined) lines.push(`order = ${model.order}`);
   return lines.join("\n");
 }
 
@@ -227,9 +310,15 @@ export class ModelCatalog {
     return this.resolve(reported)?.provider ?? null;
   }
 
-  /** Every known model, one provider's or all of them, alphabetically. */
+  /** Every known model, one provider's or all of them. Ordered by `order`, then name. */
   list(provider?: string): LlmModel[] {
     const rows = provider === undefined ? this.models : this.models.filter((m) => m.provider === provider);
-    return [...rows].sort((a, b) => (a.name < b.name ? -1 : 1));
+    return rows.sort((a, b) => {
+      if (a.order !== undefined || b.order !== undefined) {
+        const byOrder = (a.order ?? Number.POSITIVE_INFINITY) - (b.order ?? Number.POSITIVE_INFINITY);
+        if (byOrder !== 0) return byOrder;
+      }
+      return a.name < b.name ? -1 : 1;
+    });
   }
 }

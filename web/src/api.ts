@@ -236,6 +236,19 @@ export async function removeModel(id: string): Promise<void> {
   }
 }
 
+/** Persist a display order: the ids come in the wanted sequence, first gets `order = 1`. */
+export async function reorderModels(ids: string[]): Promise<void> {
+  const res = await fetch("/api/models/order", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
   const res = await fetch("/api/subscriptions");
   const body = (await res.json()) as SubscriptionsResponse;

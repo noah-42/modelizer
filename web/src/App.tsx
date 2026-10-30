@@ -8,6 +8,7 @@ import {
   fetchSessions,
   fetchSubscriptions,
   removeModel,
+  reorderModels,
   type AuditEventRow,
   type DiaryDay,
   type LlmModel,
@@ -426,6 +427,21 @@ function ModelsView() {
     }
   };
 
+  const move = async (list: LlmModel[], from: number, step: -1 | 1) => {
+    const to = from + step;
+    if (to < 0 || to >= list.length || removing !== null) return;
+    const ids = list.map((m) => m.id);
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    setError(null);
+    setAdded(null);
+    try {
+      await reorderModels(ids);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const byProvider = new Map<string, LlmModel[]>();
   for (const m of models ?? []) {
     const list = byProvider.get(m.provider) ?? [];
@@ -500,6 +516,26 @@ function ModelsView() {
                   ) : (
                     m.id
                   )}
+                </span>
+                <span className="model-order">
+                  <button
+                    className="order-btn"
+                    onClick={() => void move(list, list.indexOf(m), -1)}
+                    disabled={list.indexOf(m) === 0}
+                    aria-label={`move ${m.name} up`}
+                    title="show earlier"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    className="order-btn"
+                    onClick={() => void move(list, list.indexOf(m), 1)}
+                    disabled={list.indexOf(m) === list.length - 1}
+                    aria-label={`move ${m.name} down`}
+                    title="show later"
+                  >
+                    ↓
+                  </button>
                 </span>
                 <button
                   className={armed === m.id ? "model-remove armed" : "model-remove"}

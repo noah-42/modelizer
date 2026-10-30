@@ -162,6 +162,21 @@ curl -s -X DELETE http://127.0.0.1:7788/api/models/deepseek%2Fdeepseek-v3.2
 
 Errors: `404` not in the catalogue, `422` removal failed.
 
+### `PUT /api/models/order`
+
+Set the display order: the ids come in the wanted sequence, the first getting `order = 1` in its
+`models.toml` block, and so on. Ids not listed keep their current rank and sort after the ranked
+ones, by name. Blocks are edited textually — comments and hand-added fields survive.
+
+```sh
+curl -s -X PUT http://127.0.0.1:7788/api/models/order \
+  -H "content-type: application/json" \
+  -d '{"ids": ["glm-5.3", "claude-opus-5-5"]}'
+# → 200 {"ordered": 2, "path": "models.toml"}
+```
+
+Errors: `404` an id is not in the catalogue (nothing is written), `422` reorder failed.
+
 ### `GET /api/diary?days=14`
 
 Per-day usage summaries per provider — the diary page as data. `days` is capped at 90.

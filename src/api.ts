@@ -20,6 +20,7 @@ import {
   ModelExistsError,
   ModelNotFoundError,
   removeModel,
+  setModelOrder,
   type LlmModel,
 } from "./models";
 import {
@@ -302,6 +303,23 @@ export function buildApi(deps: {
       if (err instanceof ModelNotFoundError) return c.json({ error: (err as Error).message }, 404);
       const message = (err as Error).message;
       return c.json({ error: `could not remove the model: ${message}` }, 422);
+    }
+  });
+
+  /**
+   * Reorder the catalogue: the ids come in display sequence, the first getting `order = 1`.
+   * Ids not listed keep their current order and sort after the ranked ones, by name.
+   */
+  app.put("/api/models/order", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { ids?: unknown } | null;
+    const ids = Array.isArray(body?.ids) ? body.ids.filter((id): id is string => typeof id === "string") : [];
+    const path = modelsPath();
+    try {
+      setModelOrder(ids, path);
+      return c.json({ ordered: ids.length, path });
+    } catch (err) {
+      if (err instanceof ModelNotFoundError) return c.json({ error: (err as Error).message }, 404);
+      return c.json({ error: `could not reorder: ${(err as Error).message}` }, 422);
     }
   });
 

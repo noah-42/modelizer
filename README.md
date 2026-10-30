@@ -91,7 +91,9 @@ model — the same model can reach you through more than one provider.
 |---|---|
 | Matching | Case-insensitive, prefix-aware; the longest match wins |
 | Unmatched model | Resolves to null — never guessed |
+| Display order | By the entry's `order` field, then alphabetically by name; the models page's ↑/↓ buttons write `order` for you |
 | Where declared models show up | Inside the provider's dashboard card |
+| Managing entries | Add by OpenRouter link, remove, and reorder — all from the models page; edits are textual, so hand-written comments and fields survive |
 | Implementation | `src/models.ts` holds `LlmModel` and `ModelCatalog` |
 
 ## Subscriptions
