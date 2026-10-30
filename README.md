@@ -166,6 +166,41 @@ security add-generic-password -s modelizer -a ZAI_API_KEY -w '<your key>'
 
 If you do use `.env`, keep it `chmod 600` (it is gitignored).
 
+## MCP server
+
+`bun run mcp` starts a read-only [MCP](https://modelcontextprotocol.io) server over stdio, so coding
+agents can check quota state themselves — call `get_overview` before a long task and pick the
+provider with headroom. Three tools, all GET-only:
+
+| Tool | Returns |
+|---|---|
+| `get_overview` | Per-provider quota windows (`five_hour`, `weekly`, …) with used % and reset times, health, and the plan each provider is on |
+| `get_subscriptions` | Plan, price, renewal date per provider + per-currency totals |
+| `get_models` | The catalogue, optionally filtered by `provider` |
+
+The server talks to the local HTTP API (default `http://127.0.0.1:7788`, override with
+`MODELIZER_URL`; set `MODELIZER_TOKEN` when the dashboard is token-protected). Provider keys never
+leave the modelizer process, and nothing here can write — catalogue edits stay dashboard-only.
+
+Claude Code:
+
+```sh
+claude mcp add modelizer --env MODELIZER_TOKEN=… -- bun --cwd /absolute/path/to/modelizer run mcp
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "modelizer": {
+      "command": "bun",
+      "args": ["--cwd", "/absolute/path/to/modelizer", "run", "mcp"]
+    }
+  }
+}
+```
+
 ## Dashboard cards
 
 - Each provider card **collapses**: the head keeps the provider name, its health badges and the
@@ -223,7 +258,7 @@ Each provider is an adapter (`src/adapters/`) with a stability tier:
 | **T1** | Official documented APIs | OpenRouter, Moonshot (Kimi) today; Anthropic/OpenAI admin APIs planned |
 | **T2** | Undocumented endpoints the community relies on — can break; failures are isolated per provider, raw responses are archived, the UI shows staleness instead of hiding it | Z.AI, personal Cursor, personal Copilot |
 | **T3** | Local files and local CLIs | Claude Code transcripts under `~/.claude/projects`; Codex app-server + session logs |
-| **T4** | UI-only, no programmatic path — placeholder cards | ChatGPT subscription, OpenCode Zen credits |
+| **T4** | UI-only, no programmatic path — placeholder cards | ChatGPT subscription, OpenCode Zen credits, Freebuff |
 
 **T2 exception:** Claude's account-wide usage endpoint (`CLAUDE_OAUTH_USAGE=1`, read-only, token
 never refreshed) is the one opt-in way to see usage outside this machine. Modelizer does not

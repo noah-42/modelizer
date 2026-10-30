@@ -7,12 +7,14 @@
     "dev": "bun run src/index.ts",
     "start": "NODE_ENV=production bun run src/index.ts",
     "poll": "bun run src/cli.ts",
+    "mcp": "bun run src/mcp.ts",
     "web:dev": "vite",
     "web:build": "vite build",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "^4.13.12",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
