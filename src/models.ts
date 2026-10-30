@@ -102,6 +102,9 @@ function modelKey(id: string): string {
 /** A later model cannot be told apart from a missing one, so adding refuses to overwrite a key. */
 export class ModelExistsError extends ModelConfigError {}
 
+/** Removing a model that is not in the catalogue. */
+export class ModelNotFoundError extends ModelConfigError {}
+
 /**
  * Append one entry to the catalogue, leaving the rest of the file untouched. Written to a temporary
  * sibling and renamed into place so a crash mid-write cannot truncate a catalogue you curated.
@@ -116,6 +119,54 @@ export function appendModel(model: LlmModel, path = DEFAULT_MODELS_PATH): void {
   const next = `${current}${separator}${serializeModel(model, path)}\n`;
   const temporary = `${path}.tmp`;
   writeFileSync(temporary, next, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+/**
+ * Remove one entry from the catalogue by id, matching the way resolution does: case-insensitive,
+ * trimmed. The block is cut out textually, so every other byte of the file — comments, field
+ * order, hand-added fields this build does not know — is preserved. Written to a temporary sibling
+ * and renamed into place, like appending.
+ */
+export function removeModel(id: string, path = DEFAULT_MODELS_PATH): void {
+  const target = modelKey(id);
+  if (target === "") throw new ModelConfigError(`${path}: id must be a non-empty string`);
+  const current = readTextOrEmpty(path);
+  const lines = current.split("\n");
+  const kept: string[] = [];
+  let removed = false;
+  // One block runs from its `[[model]]` header to the next header or end of file.
+  let block: string[] | null = null;
+  let blockId: string | null = null;
+  const flush = () => {
+    if (block === null) return;
+    if (blockId === target && !removed) {
+      removed = true;
+    } else {
+      kept.push(...block);
+    }
+    block = null;
+    blockId = null;
+  };
+  for (const line of lines) {
+    if (line.trim() === "[[model]]") {
+      flush();
+      block = [line];
+      blockId = null;
+    } else if (block !== null) {
+      block.push(line);
+      if (blockId === null) {
+        const match = /^\s*id\s*=\s*(['"])(.*)\1\s*$/.exec(line);
+        if (match !== null) blockId = modelKey(match[2] ?? "");
+      }
+    } else {
+      kept.push(line);
+    }
+  }
+  flush();
+  if (!removed) throw new ModelNotFoundError(`${path}: "${id}" is not in the catalogue`);
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, kept.join("\n"), { mode: 0o600 });
   renameSync(temporary, path);
 }
 

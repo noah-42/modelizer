@@ -131,6 +131,25 @@ body {
 .model-id a {
   color: inherit;
 }
+.model-remove {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: pointer;
+}
+.model-remove:hover,
+.model-remove.armed {
+  border-color: #c0392b;
+  color: #e74c3c;
+}
+.model-remove:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .clock {
   font-variant-numeric: tabular-nums;
   font-size: 13px;

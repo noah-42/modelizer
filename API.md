@@ -148,6 +148,20 @@ curl -s -X POST http://127.0.0.1:7788/api/models \
 Errors: `400` not an OpenRouter link, `404` unknown model, `409` already catalogued, `422`
 broken config, `502` OpenRouter unreachable.
 
+### `DELETE /api/models/:id`
+
+Remove a catalogue entry by id (URL-encoded in the path). Matching is case-insensitive and
+trimmed, like resolution. The `[[model]]` block is cut out textually, so every other byte of
+`models.toml` — comments, field order, hand-added fields — is preserved, and removal works even
+when the rest of the file is currently unparsable.
+
+```sh
+curl -s -X DELETE http://127.0.0.1:7788/api/models/deepseek%2Fdeepseek-v3.2
+# → 200 {"removed": "deepseek/deepseek-v3.2", "path": "models.toml"}
+```
+
+Errors: `404` not in the catalogue, `422` removal failed.
+
 ### `GET /api/diary?days=14`
 
 Per-day usage summaries per provider — the diary page as data. `days` is capped at 90.

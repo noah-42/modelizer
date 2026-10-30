@@ -7,6 +7,7 @@ import {
   fetchOverview,
   fetchSessions,
   fetchSubscriptions,
+  removeModel,
   type AuditEventRow,
   type DiaryDay,
   type LlmModel,
@@ -370,6 +371,9 @@ function ModelsView() {
   const [provider, setProvider] = useState("openrouter");
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState<string | null>(null);
+  // Removal is two clicks: the first arms the row, the second deletes.
+  const [armed, setArmed] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -398,6 +402,27 @@ function ModelsView() {
       setError((err as Error).message);
     } finally {
       setAdding(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (armed !== id) {
+      setArmed(id);
+      return;
+    }
+    if (removing !== null) return;
+    setRemoving(id);
+    setError(null);
+    setAdded(null);
+    try {
+      await removeModel(id);
+      setAdded(`${id} removed`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRemoving(null);
+      setArmed(null);
     }
   };
 
@@ -476,6 +501,15 @@ function ModelsView() {
                     m.id
                   )}
                 </span>
+                <button
+                  className={armed === m.id ? "model-remove armed" : "model-remove"}
+                  onClick={() => void remove(m.id)}
+                  disabled={removing !== null}
+                  aria-label={`remove ${m.name}`}
+                  title={armed === m.id ? "click again to remove" : `remove ${m.name} from the catalogue`}
+                >
+                  {removing === m.id ? "removing…" : armed === m.id ? "confirm?" : "remove"}
+                </button>
               </div>
             ))}
           </div>

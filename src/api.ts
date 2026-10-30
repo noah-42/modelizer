@@ -18,6 +18,8 @@ import {
   ModelCatalog,
   ModelConfigError,
   ModelExistsError,
+  ModelNotFoundError,
+  removeModel,
   type LlmModel,
 } from "./models";
 import {
@@ -278,6 +280,28 @@ export function buildApi(deps: {
       if (err instanceof ModelExistsError) return c.json({ error: message }, 409);
       if (err instanceof ModelConfigError) return c.json({ error: message }, 422);
       return c.json({ error: `could not add the model: ${message}` }, 502);
+    }
+  });
+
+  /**
+   * Remove a model from the catalogue by id (URL-encoded in the path). Removal is textual, so it
+   * works even when the rest of the file is currently unparsable; only a missing entry fails.
+   */
+  app.delete("/api/models/:id", (c) => {
+    const path = modelsPath();
+    let id: string;
+    try {
+      id = decodeURIComponent(c.req.param("id"));
+    } catch {
+      return c.json({ error: "the model id must be URL-encoded" }, 400);
+    }
+    try {
+      removeModel(id, path);
+      return c.json({ removed: id, path });
+    } catch (err) {
+      if (err instanceof ModelNotFoundError) return c.json({ error: (err as Error).message }, 404);
+      const message = (err as Error).message;
+      return c.json({ error: `could not remove the model: ${message}` }, 422);
     }
   });
 

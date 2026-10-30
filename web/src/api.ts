@@ -227,6 +227,15 @@ export async function addModel(url: string, provider?: string): Promise<LlmModel
   return body.model;
 }
 
+/** Remove a model from the catalogue by id; the file keeps everything else untouched. */
+export async function removeModel(id: string): Promise<void> {
+  const res = await fetch(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
   const res = await fetch("/api/subscriptions");
   const body = (await res.json()) as SubscriptionsResponse;

@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadModels, ModelCatalog, ModelConfigError, type LlmModel } from "./models";
+import { loadModels, ModelCatalog, ModelConfigError, ModelNotFoundError, removeModel, type LlmModel } from "./models";
 
 const root = mkdtempSync(join(tmpdir(), "modelizer-models-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -106,5 +106,62 @@ describe("ModelCatalog", () => {
     expect(catalog.list("claude").map((m) => m.name)).toEqual(["Claude Opus 5.5", "Claude Sonnet 5.5"]);
     expect(catalog.list()).toHaveLength(4);
     expect(catalog.list("zai").map((m) => m.id)).toEqual(["glm-5.3"]);
+  });
+});
+
+describe("removeModel", () => {
+  const original = [
+    "# curated by hand",
+    "[[model]]",
+    'id = "claude-opus-5-5"',
+    'provider = "claude"',
+    "",
+    "[[model]]",
+    'id = "gpt-6-luna"',
+    "context_length = 262144",
+    'provider = "codex"',
+    "",
+  ].join("\n");
+
+  test("cuts out one block and preserves the rest of the file byte for byte", () => {
+    const path = configFile("remove.toml", `${original}\n`);
+    removeModel("gpt-6-luna", path);
+    expect(readFileSync(path, "utf8")).toBe(
+      ["# curated by hand", "[[model]]", 'id = "claude-opus-5-5"', 'provider = "claude"', ""].join("\n"),
+    );
+  });
+
+  test("matches case-insensitively", () => {
+    const path = configFile("remove-case.toml", `${original}\n`);
+    removeModel("GPT-6-Luna", path);
+    expect(loadModels(path).map((m) => m.id)).toEqual(["claude-opus-5-5"]);
+  });
+
+  test("leaves single-quoted ids and hand-added fields intact on the survivors", () => {
+    const path = configFile(
+      "remove-quotes.toml",
+      "[[model]]\nid = 'keep-me'\nprovider = \"zai\"\nextra_field = true\n\n[[model]]\nid = \"drop-me\"\nprovider = \"codex\"\n",
+    );
+    removeModel("drop-me", path);
+    expect(readFileSync(path, "utf8")).toBe(
+      "[[model]]\nid = 'keep-me'\nprovider = \"zai\"\nextra_field = true\n",
+    );
+  });
+
+  test("refuses a model that is not in the catalogue, and leaves the file alone", () => {
+    const path = configFile("remove-miss.toml", `${original}\n`);
+    expect(() => removeModel("mystery-1", path)).toThrow(ModelNotFoundError);
+    expect(readFileSync(path, "utf8")).toBe(`${original}\n`);
+  });
+
+  test("works from an empty or absent catalogue with a clear error", () => {
+    expect(() => removeModel("gpt-6", configFile("remove-empty.toml", ""))).toThrow(/not in the catalogue/);
+    expect(() => removeModel("gpt-6", join(root, "remove-absent.toml"))).toThrow(/not in the catalogue/);
+  });
+
+  test("the result still parses", () => {
+    const path = configFile("remove-parse.toml", `${original}\n`);
+    removeModel("gpt-6-luna", path);
+    expect(loadModels(path)).toEqual([{ id: "claude-opus-5-5", name: "claude-opus-5-5", provider: "claude" }]);
   });
 });
