@@ -220,7 +220,7 @@ Each provider is an adapter (`src/adapters/`) with a stability tier:
 
 | Tier | Meaning | Providers |
 |---|---|---|
-| **T1** | Official documented APIs | OpenRouter today; Anthropic/OpenAI admin APIs planned |
+| **T1** | Official documented APIs | OpenRouter, Moonshot (Kimi) today; Anthropic/OpenAI admin APIs planned |
 | **T2** | Undocumented endpoints the community relies on — can break; failures are isolated per provider, raw responses are archived, the UI shows staleness instead of hiding it | Z.AI, personal Cursor, personal Copilot |
 | **T3** | Local files and local CLIs | Claude Code transcripts under `~/.claude/projects`; Codex app-server + session logs |
 | **T4** | UI-only, no programmatic path — placeholder cards | ChatGPT subscription, OpenCode Zen credits |

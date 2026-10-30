@@ -42,7 +42,7 @@ enabled = true
 [providers.codex]
 enabled = true
 
-# [providers.kimi]       # key: MOONSHOT_API_KEY
+# [providers.moonshot]   # key: MOONSHOT_API_KEY — Kimi models, pay-as-you-go balance
 # enabled = true
 
 # [providers.openai]     # key: OPENAI_ADMIN_API_KEY

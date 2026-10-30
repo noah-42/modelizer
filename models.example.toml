@@ -42,6 +42,13 @@ id = "GLM-5.3"
 name = "GLM-5.3"
 provider = "zai"
 
+# Kimi is Moonshot's model family; the adapter tracks the account balance at
+# api.moonshot.ai (USD) or api.moonshot.cn (CNY) via MOONSHOT_BASE_URL.
+[[model]]
+id = "kimi-k2-thinking"
+name = "Kimi K2 Thinking"
+provider = "moonshot"
+
 # The same model under a second provider: a separate block, because the association is per route.
 [[model]]
 id = "gpt-6.1-sol@openrouter"
