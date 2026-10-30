@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { parse } from "smol-toml";
 
 /**
@@ -43,6 +43,7 @@ export interface SubscriptionFacts {
 /** One `[[subscription]]` block from subscriptions.toml. */
 export interface SubscriptionEntry {
   provider: string;
+  order?: number;
   plan?: string;
   /** Display name when the plan has no catalogue entry (config is the user's own wording). */
   label?: string;
@@ -133,6 +134,201 @@ export class SubscriptionConfigError extends Error {}
 
 export const DEFAULT_SUBSCRIPTIONS_PATH = "subscriptions.toml";
 
+export interface SubscriptionUpdate {
+  plan?: string | null;
+  label?: string | null;
+  note?: string | null;
+  price?: number | null;
+  priceNext?: number | null;
+  currency?: string | null;
+  period?: BillingPeriod | null;
+  renewsDay?: number | null;
+  renewsAt?: string | null;
+  endsAt?: string | null;
+  state?: SubscriptionState | null;
+  seats?: number | null;
+  order?: number | null;
+}
+
+const SUBSCRIPTION_FIELDS = [
+  ["plan", "plan"],
+  ["label", "label"],
+  ["note", "note"],
+  ["price", "price"],
+  ["priceNext", "price_next"],
+  ["currency", "currency"],
+  ["period", "period"],
+  ["renewsDay", "renews_day"],
+  ["renewsAt", "renews_at"],
+  ["endsAt", "ends_at"],
+  ["state", "state"],
+  ["seats", "seats"],
+  ["order", "order"],
+] as const;
+
+export function appendSubscription(entry: SubscriptionEntry, path = DEFAULT_SUBSCRIPTIONS_PATH): void {
+  const existing = loadSubscriptions(path);
+  const validated = parseEntry(toTomlEntry(entry), existing.length, path);
+  if (existing.some(({ provider }) => provider === validated.provider)) {
+    throw new SubscriptionConfigError(`${path}: provider "${validated.provider}" already exists`);
+  }
+  const current = readSubscriptionText(path);
+  const separator = current.trim() === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+  writeSubscriptions(path, `${current}${separator}${serializeSubscription(validated)}\n`);
+}
+
+export function updateSubscription(
+  provider: string,
+  changes: SubscriptionUpdate,
+  path = DEFAULT_SUBSCRIPTIONS_PATH,
+): void {
+  const current = readSubscriptionText(path);
+  const entries = loadSubscriptions(path);
+  if (!entries.some((entry) => entry.provider === provider)) throw missingSubscription(provider, path);
+  const blocks = splitSubscriptionBlocks(current);
+  const targetIndex = entries.findIndex((entry) => entry.provider === provider);
+  const targetBlock = blocks.find((block) => block.some((line) => readTomlString(line) === provider));
+  if (targetBlock === undefined) throw missingSubscription(provider, path);
+  const values: Record<string, unknown> = { ...toTomlEntry(entries[targetIndex] as SubscriptionEntry) };
+  for (const [field] of SUBSCRIPTION_FIELDS) {
+    const value = changes[field];
+    if (value === undefined) continue;
+    if (value === null || value === "") delete values[field];
+    else values[field] = value;
+  }
+  const validated = parseEntry(values, targetIndex, path);
+  blocks[blocks.indexOf(targetBlock)] = replaceSubscriptionFields(targetBlock, validated);
+  writeSubscriptions(path, blocks.flat().join("\n"));
+}
+
+export function removeSubscription(provider: string, path = DEFAULT_SUBSCRIPTIONS_PATH): void {
+  const current = readSubscriptionText(path);
+  const entries = loadSubscriptions(path);
+  const index = entries.findIndex((entry) => entry.provider === provider);
+  if (index < 0) throw missingSubscription(provider, path);
+  const blocks = splitSubscriptionBlocks(current);
+  const blockIndex = blocks.findIndex((block) => block.some((line) => readTomlString(line) === provider));
+  const target = blocks[blockIndex];
+  if (target === undefined) throw missingSubscription(provider, path);
+  blocks.splice(blockIndex, 1);
+  writeSubscriptions(path, blocks.flat().join("\n"));
+}
+
+export function setSubscriptionOrder(providers: string[], path = DEFAULT_SUBSCRIPTIONS_PATH): void {
+  const entries = loadSubscriptions(path);
+  const unique = new Set(providers);
+  if (unique.size !== providers.length) throw new SubscriptionConfigError(`${path}: provider order contains duplicates`);
+  const unknown = providers.filter((provider) => !entries.some((entry) => entry.provider === provider));
+  if (unknown.length > 0) throw missingSubscription(unknown[0] ?? "", path);
+  const current = readSubscriptionText(path);
+  const lines = current.split("\n");
+  const blocks = splitSubscriptionBlocks(current);
+  const reordered = blocks.map((block, index) => {
+    const entry = entries[index];
+    if (entry === undefined) return block;
+    const rank = providers.indexOf(entry.provider);
+    return rank < 0 ? block : replaceSubscriptionOrder(block, rank + 1);
+  });
+  writeSubscriptions(path, reordered.flat().join("\n"));
+}
+
+function splitSubscriptionBlocks(text: string): string[][] {
+  const lines = text.split("\n");
+  const blocks: string[][] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === "[[subscription]]" && current.length > 0) {
+      blocks.push(current);
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current);
+  return blocks;
+}
+
+function replaceSubscriptionFields(block: string[], entry: SubscriptionEntry): string[] {
+  const fields = new Map<string, string>();
+  for (const [field, key] of SUBSCRIPTION_FIELDS) {
+    const value = entry[field];
+    if (value !== undefined) fields.set(key, `${key} = ${typeof value === "string" ? JSON.stringify(value) : value}`);
+  }
+  const firstHeader = block.findIndex((line) => line.trim() === "[[subscription]]");
+  const header = firstHeader < 0 ? [] : block.slice(0, firstHeader + 1);
+  const body = firstHeader < 0 ? block : block.slice(firstHeader + 1);
+  const providerLine = body.findIndex((line) => /^\s*provider\s*=/.test(line));
+  const retained = body.filter((line) => !SUBSCRIPTION_FIELDS.some(([, key]) => new RegExp(`^\\s*${key}\\s*=`).test(line)));
+  const insertion = providerLine < 0 ? 0 : Math.min(providerLine, retained.length);
+  retained.splice(insertion, 0, ...fields.values());
+  return [...header, ...retained];
+}
+
+function replaceSubscriptionOrder(block: string[], order: number): string[] {
+  const line = `order = ${order}`;
+  const existing = block.findIndex((item) => /^\s*order\s*=/.test(item));
+  if (existing >= 0) {
+    block[existing] = line;
+    return block;
+  }
+  const providerLine = block.findIndex((item) => /^\s*provider\s*=/.test(item));
+  block.splice(providerLine < 0 ? 0 : providerLine + 1, 0, line);
+  return block;
+}
+
+function readSubscriptionText(path: string): string {
+  try {
+    const text = readFileSync(path, "utf8");
+    parse(text);
+    loadSubscriptions(path);
+    return text;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+function writeSubscriptions(path: string, contents: string): void {
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, contents, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function missingSubscription(provider: string, path: string): SubscriptionConfigError {
+  return new SubscriptionConfigError(`${path}: provider "${provider}" is not configured`);
+}
+
+function serializeSubscription(entry: SubscriptionEntry): string {
+  return ["[[subscription]]", ...serializeSubscriptionFields(entry)].join("\n");
+}
+
+function serializeSubscriptionFields(entry: SubscriptionEntry): string[] {
+  const lines = [`provider = ${JSON.stringify(entry.provider)}`];
+  for (const [field, key] of SUBSCRIPTION_FIELDS) {
+    const value = entry[field];
+    if (value !== undefined) lines.push(`${key} = ${typeof value === "string" ? JSON.stringify(value) : value}`);
+  }
+  return lines;
+}
+
+function toTomlEntry(entry: SubscriptionEntry): Record<string, unknown> {
+  const result: Record<string, unknown> = { provider: entry.provider };
+  for (const [field, key] of SUBSCRIPTION_FIELDS) {
+    const value = entry[field];
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function readTomlString(line: string): string | null {
+  const match = /^\s*provider\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/.exec(line);
+  if (match === null) return null;
+  try {
+    return String(parse(`value = ${match[1]}`).value);
+  } catch {
+    return null;
+  }
+}
+
 export function loadSubscriptions(path = DEFAULT_SUBSCRIPTIONS_PATH): SubscriptionEntry[] {
   let text = "";
   try {
@@ -167,6 +363,11 @@ function parseEntry(block: unknown, index: number, path: string): SubscriptionEn
   if (provider === "") throw new SubscriptionConfigError(`${where}: provider is required`);
 
   const entry: SubscriptionEntry = { provider };
+  const order = optionalNumber(b.order, `${where}: order`);
+  if (order !== null) {
+    if (!Number.isInteger(order) || order < 1) throw new SubscriptionConfigError(`${where}: order must be an integer >= 1`);
+    entry.order = order;
+  }
   const plan = optionalString(b.plan, `${where}: plan`);
   if (plan !== null) entry.plan = plan;
   const label = optionalString(b.label, `${where}: label`);
@@ -317,9 +518,23 @@ export class SubscriptionCatalog {
   /** One row per provider, priciest first at the rate in force — the same number the total uses. */
   list(): Subscription[] {
     const providers = new Set<string>([...this.entries.map((e) => e.provider), ...this.facts.keys()]);
+    const ranked = new Map(
+      this.entries
+        .filter((entry) => entry.order !== undefined)
+        .map((entry) => [entry.provider, entry.order as number]),
+    );
     return [...providers]
       .map((provider) => this.merge(provider))
-      .sort((a, b) => (b.current ?? -1) - (a.current ?? -1) || (a.provider < b.provider ? -1 : 1));
+      .sort((a, b) => {
+        const aOrder = ranked.get(a.provider);
+        const bOrder = ranked.get(b.provider);
+        if (aOrder !== undefined || bOrder !== undefined) {
+          if (aOrder === undefined) return 1;
+          if (bOrder === undefined) return -1;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+        }
+        return (b.current ?? -1) - (a.current ?? -1) || (a.provider < b.provider ? -1 : 1);
+      });
   }
 
   /**
