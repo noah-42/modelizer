@@ -4,9 +4,10 @@ One local dashboard for all your LLM subscriptions and APIs — quotas, balances
 OpenRouter, Cursor, Copilot, Z.AI, Claude, Kimi, OpenCode, and more, without logging into each
 provider's website.
 
-Runs as a single process on your machine: a scheduler polls provider APIs every 15 minutes,
-normalizes everything into SQLite, and serves a small web dashboard. No traffic is proxied —
-modelizer only reads the usage each provider already records.
+- **Single process, your machine** — a scheduler polls provider APIs every 15 minutes
+- **SQLite at the core** — everything is normalized into one local database
+- **Small web dashboard** — served at `127.0.0.1:7788`
+- **No proxying** — modelizer only reads the usage each provider already records
 
 ## Quick start
 
@@ -20,10 +21,16 @@ bun run web:build           # once (or skip and use `bun run web:dev` for UI wor
 bun run dev                 # → http://127.0.0.1:7788
 ```
 
-Secrets live only in `.env` (or the keychain) — never in a config file, the database or git.
-Everything you personalise is gitignored and has an `*.example.toml` committed next to it:
-`.env` / `modelizer.toml` / `subscriptions.toml` / `models.toml`. That split is the line between
-the software and your data — a fresh clone plus four copies is a working install.
+**Where secrets and personal data live** — never in a config file, the database or git:
+
+| File | Gitignored | Committed template | Contents |
+|---|---|---|---|
+| `.env` | yes | `.env.example` | API keys (or keep them in the keychain) |
+| `modelizer.toml` | yes | `modelizer.example.toml` | provider toggles, server settings |
+| `subscriptions.toml` | yes | `subscriptions.example.toml` | what you pay |
+| `models.toml` | yes | `models.example.toml` | model → provider mapping |
+
+A fresh clone plus four copies is a working install.
 
 ## Commands
 
@@ -47,37 +54,45 @@ and `CLAUDE_USAGE_FILE=data/mock-claude/usage.txt`.
 ## Status API
 
 Full reference for other services lives in [API.md](API.md) — endpoints, token auth, payload
-shapes. Summary:
+shapes.
 
-- `GET /api/overview` — one object per provider: state (last poll, errors, staleness) + latest points.
-  Each provider also has `windows[]`: `{ window, usedPercent, resetsAt, source, stale }` for the
-  authoritative quota windows (`five_hour`, `weekly`, and Z.AI's `monthly` / `mcp`). `source` is
-  `statusline`, `app-server`, `session-log`, `usage-command`, `hook`, or `zai-api`. `stale` is true when a
-  Claude source is missing or unsupported, or a Codex/Z.AI reset was rolled forward or discarded.
-- `GET /api/providers/:id/points?days=30` — point history
-- `GET /api/providers/:id/raw?limit=10` — raw archived responses (repair evidence when an
-  undocumented endpoint drifts)
-- `GET /api/models` — the model → provider associations from `models.toml` (gitignored, see
-  `models.example.toml`), with context and per-million pricing where known. A broken file answers
-  422 with `error` set. Matching is case-insensitive and prefix-aware, so a versioned id finds its
-  base model; an unmatched model stays unknown rather than being attributed to a guess.
-- `POST /api/models` — add an entry from an OpenRouter link (`{url, provider?}`); the server reads
-  the metadata from OpenRouter and appends the block. See API.md for the error codes.
-- `GET /api/subscriptions` — the Subscriptions page: one row per provider with `plan`, `state`,
-  `price`, `priceNext`, `currency`, `current`, `monthly`, `recurring`, `prepaid`, `counts`,
-  `renewsAt`/`endsAt`, `source`, plus `totals[]` (the value of the plans active **now**, per
-  currency — USD and EUR are never added together). `current` is the price in force this period
-  and is what the total sums; a plan paid up front or cancelled carries `counts: false`. A
-  malformed `subscriptions.toml` answers 422 with `error` set, and the page shows the message.
+| Endpoint | Returns |
+|---|---|
+| `GET /api/overview` | One object per provider: state (last poll, errors, staleness) + latest points |
+| `GET /api/providers/:id/points?days=30` | Point history |
+| `GET /api/providers/:id/raw?limit=10` | Raw archived responses (repair evidence when an undocumented endpoint drifts) |
+| `GET /api/models` | Model → provider associations from `models.toml`, with context and per-million pricing where known |
+| `POST /api/models` | Add an entry from an OpenRouter link (`{url, provider?}`); the server reads the metadata from OpenRouter and appends the block |
+| `GET /api/subscriptions` | The Subscriptions page: plan, billing state, price, renewal dates, totals per currency |
+
+Notes on the two richest endpoints:
+
+- **`/api/overview`** — each provider carries `windows[]`: `{ window, usedPercent, resetsAt, source, stale }`
+  for the authoritative quota windows (`five_hour`, `weekly`, and Z.AI's `monthly` / `mcp`).
+  - `source` is one of `statusline`, `app-server`, `session-log`, `usage-command`, `hook`, `zai-api`.
+  - `stale` is true when a Claude source is missing or unsupported, or a Codex/Z.AI reset was
+    rolled forward or discarded.
+- **`/api/models`** — a broken file answers 422 with `error` set. Matching is case-insensitive and
+  prefix-aware, so a versioned id finds its base model; an unmatched model stays unknown rather
+  than being attributed to a guess.
+- **`/api/subscriptions`** — rows carry `plan`, `state`, `price`, `priceNext`, `currency`,
+  `current`, `monthly`, `recurring`, `prepaid`, `counts`, `renewsAt`/`endsAt`, `source`, plus
+  `totals[]` (the value of the plans active **now**, per currency — USD and EUR are never added
+  together). `current` is the price in force this period and is what the total sums; a plan paid
+  up front or cancelled carries `counts: false`. A malformed `subscriptions.toml` answers 422
+  with `error` set, and the page shows the message.
 
 ## Models
 
 `models.toml` (gitignored, `models.example.toml` tracked) declares which provider serves which
-model. Adapters report model strings; this file answers "whose model is that", because the same
-model can reach you through more than one provider. `src/models.ts` holds `LlmModel` and
-`ModelCatalog`: matching is case-insensitive and prefix-aware, the longest match wins, and an
-unmatched model resolves to null rather than being attributed to a guess. The dashboard lists a
-provider's declared models inside its card.
+model — the same model can reach you through more than one provider.
+
+| Rule | Behaviour |
+|---|---|
+| Matching | Case-insensitive, prefix-aware; the longest match wins |
+| Unmatched model | Resolves to null — never guessed |
+| Where declared models show up | Inside the provider's dashboard card |
+| Implementation | `src/models.ts` holds `LlmModel` and `ModelCatalog` |
 
 ## Subscriptions
 
@@ -89,85 +104,91 @@ date. Two sources are merged, because no provider exposes both halves:
 | provider facts | plan, billing state, seats, billing period | Claude `/api/oauth/profile` (`CLAUDE_OAUTH_USAGE=1`), Cursor `/auth/full_stripe_profile`, OpenAI via Codex `~/.codex/auth.json` |
 | `subscriptions.toml` | price, currency, renewal day, paid-through date | your own file (gitignored, see `subscriptions.example.toml`) |
 
-Facts win for plan and state — the provider knows. Config wins for price and renewal, because
-none of those APIs states a charge date (Claude reports `subscription_created_at`, Codex nothing,
-Cursor nothing). Nothing is guessed: an unpriced plan shows "set price", a missing charge day
-shows "set renews_day", and an unknown plan id keeps a null name unless the config gives it a
-`label`.
+**Precedence:** facts win for plan and state — the provider knows. Config wins for price and
+renewal, because none of those APIs states a charge date. Nothing is guessed:
 
-Money stays in the currency it is billed in: `currency = "EUR"` is shown as euros and totalled
-separately from dollars, because converting would invent an exchange rate. `price_next` models an
-intro rate (charged 15 now, 30 from the next renewal): the row shows both, the total uses the
-recurring amount. `renews_day` is a day of month (clamped in short months), `renews_at` rolls an
-annual charge forward, and `ends_at` marks a plan that will not renew — an annual term paid up
-front, or a subscription with auto-renew switched off. Such a plan shows its last day ("ends Nov
-12 · in 20d · won't renew") instead of a renewal.
+- an unpriced plan shows "set price"
+- a missing charge day shows "set renews_day"
+- an unknown plan id keeps a null name unless the config gives it a `label`
 
-The header total is the value of the plans active right now, at the price in force this period:
-a plan whose intro rate has not ended yet counts at the cheap rate, a free plan counts at zero,
-and a term paid up front is left out because that money is already spent rather than monthly. The
-page names whatever it left out under the total instead of dropping it silently.
+**Config fields:**
 
-One row per provider, so a plan that is billed under one provider id gets one block: a Cursor
-subscription charged in euros is still `provider = "cursor"`, with `currency`/`price` overriding
-the dollar list price. Duplicate provider blocks are rejected rather than silently losing one.
-xAI has no programmatic path — its API exposes credits for API keys, not the SuperGrok
-subscription — so it is config-only if you hold one.
+| Field | Meaning |
+|---|---|
+| `price` / `currency` | Amount per billing period (default USD); overrides the provider's list price |
+| `price_next` | Intro rate: charged 15 now, 30 from the next renewal — the row shows both, the total uses the recurring amount |
+| `period` | `"monthly"` (default) or `"annual"` |
+| `renews_day` | Day of month it charges (1–31, clamped in short months) |
+| `renews_at` | ISO date of a known past charge, rolled forward — for annual auto-renewals |
+| `ends_at` | Last day of a plan that will not renew (prepaid term, or auto-renew off) — the card shows "ends Nov 12 · in 20d · won't renew" |
+| `label` | Display name; wins over the catalogue and the provider's own wording |
+| `note` | A fact the card should carry, e.g. "free daily messages, reset 2:00 AM" |
+| `seats` | Seat count, when the plan is per seat |
 
-Cursor's access token is read read-only from Cursor's own `state.vscdb`
+**Money rules:**
+
+- Currency is never converted: `currency = "EUR"` is totalled separately from dollars, because
+  converting would invent an exchange rate.
+- The header total is the value of the plans active right now, at the price in force this period:
+  - a plan whose intro rate has not ended yet counts at the cheap rate
+  - a free plan counts at zero
+  - a term paid up front is left out (that money is already spent, not monthly) — the page names
+    what it left out under the total instead of dropping it silently
+- One row per provider: duplicate provider blocks are rejected rather than silently losing one.
+- xAI has no programmatic path — its API exposes credits for API keys, not the SuperGrok
+  subscription — so it is config-only if you hold one.
+
+**Cursor note:** the access token is read read-only from Cursor's own `state.vscdb`
 (`cursorAuth/accessToken`), sent only to `api2.cursor.sh`, and never logged or written back.
 `/api/usage-summary` needs a cursor.com cookie session, so Cursor contributes plan facts and no
 usage points; its card points at the Subscriptions tab.
 
 ## Security
 
-- **Dedicated, revocable keys.** Z.AI (and most providers here) have no read-only scope — a key
-  that reads usage can also run inference. Create a separate key per tool at the provider's
-  console, name it `modelizer`, and revoke it independently if anything leaks. Never reuse the
-  key your coding agents run on.
-- **macOS Keychain over `.env`.** Secrets resolve from the environment first, then the keychain —
-  no plaintext file needed:
-  ```sh
-  security add-generic-password -s modelizer -a ZAI_API_KEY -w '<your key>'
-  # rotate:  security delete-generic-password -s modelizer -a ZAI_API_KEY  (then re-add)
-  ```
-  If you do use `.env`, keep it `chmod 600` (it is gitignored).
-- **Minimal egress.** Each adapter GETs only its documented endpoints with the key in the
-  `Authorization` header over TLS. Keys never appear in URLs, logs, the database, or API
-  responses (`raw_polls` archives response bodies only — providers never echo your key back).
-- **Localhost only, token for the rest.** The dashboard binds `127.0.0.1` by default, and the
-  data itself (quotas, spend) is sensitive. To let other machines read the API, set `[server]
-  token` in `modelizer.toml` (or `MODELIZER_TOKEN`): local callers stay trusted, anything from
-  further away must present the token as `Authorization: Bearer …` or `?token=…`. The token has
-  no scopes — it reads and writes — so treat it like a key and keep the bind narrow.
-- **Gentle polling.** 15-minute default cadence with exponential backoff and `retry-after`
-  honoring; the failure state of one provider never affects another.
-- **Reset notices.** When `MODELIZER_WEBHOOK_URL` is set, a passed reset (or a sharp usage drop)
-  is POSTed once. The URL and `MODELIZER_WEBHOOK_SECRET` are never written to logs. The secret
-  can live in the keychain under the same service (`-a MODELIZER_WEBHOOK_SECRET`).
+| Principle | What modelizer does |
+|---|---|
+| Dedicated, revocable keys | Z.AI (and most providers here) have no read-only scope — a key that reads usage can also run inference. Create a separate key per tool, name it `modelizer`, revoke it independently. Never reuse the key your coding agents run on. |
+| Keychain over `.env` | Secrets resolve from the environment first, then the macOS keychain — no plaintext file needed (see below). |
+| Minimal egress | Each adapter GETs only its documented endpoints, key in the `Authorization` header over TLS. Keys never appear in URLs, logs, the database, or API responses (`raw_polls` archives response bodies only — providers never echo your key back). |
+| Localhost only | The dashboard binds `127.0.0.1` by default; the data itself (quotas, spend) is sensitive. |
+| Token for the rest | Set `[server] token` (or `MODELIZER_TOKEN`) to let other machines read the API: local callers stay trusted, anything remote must present it as `Authorization: Bearer …` or `?token=…`. The token has no scopes — treat it like a key and keep the bind narrow. |
+| Gentle polling | 15-minute default cadence with exponential backoff and `retry-after` honoring; one provider's failure never affects another. |
+| Reset notices | With `MODELIZER_WEBHOOK_URL` set, a passed reset is POSTed once; the URL and secret never reach logs. |
+
+Keychain usage:
+
+```sh
+security add-generic-password -s modelizer -a ZAI_API_KEY -w '<your key>'
+# rotate:  security delete-generic-password -s modelizer -a ZAI_API_KEY  (then re-add)
+```
+
+If you do use `.env`, keep it `chmod 600` (it is gitignored).
 
 ## Dashboard cards
 
-Each provider card collapses. The head keeps the provider name, its health badges and the refresh
-times of the windows that gate a working session — the five-hour window and the weekly budget above
-it — while the usage bars, per-model tables and notes fold away behind it. A plan without a
-five-hour window still shows its weekly refresh (SpaceX/Cursor is metered by the week only). A window with nothing spent reads
-"idle — nothing used, no reset to wait for": some providers only report a reset time while the
-window is running, and an unused window has no figure to wait on. Provider headings use display names
-(`Codex (OpenAI)`, `SpaceX (Cursor)`, `ZAI`, `Open Router`); the provider id stays the key in config,
-the API and the database, and shows in the heading's tooltip.
+- Each provider card **collapses**: the head keeps the provider name, its health badges and the
+  refresh times of the windows that gate a working session (the five-hour window and the weekly
+  budget above it); usage bars, per-model tables and notes fold away behind it.
+- A plan without a five-hour window still shows its weekly refresh (SpaceX/Cursor is metered by
+  the week only).
+- A window with nothing spent reads "idle — nothing used, no reset to wait for": some providers
+  only report a reset time while the window is running, and an unused window has no figure to
+  wait on.
+- Provider headings use display names (`Codex (OpenAI)`, `SpaceX (Cursor)`, `ZAI`, `Open Router`);
+  the provider id stays the key in config, the API and the database, and shows in the heading's
+  tooltip.
 
 ## Reset notices
 
-Off unless `MODELIZER_WEBHOOK_URL` is set. After each scheduler tick, modelizer compares the
-latest quota windows with the previous snapshot. A notice fires when a window's `resetsAt` has
-passed, or when `usedPercent` drops by 25 points or more (a refresh the clock did not announce).
-Each `(provider, window, reset)` is delivered once. Failures retry with backoff and then stop;
-the dashboard is unaffected.
+Off unless `MODELIZER_WEBHOOK_URL` is set.
 
-`MODELIZER_WEBHOOK_FORMAT` is `json` or `ntfy`. When the format is unset and the URL host is
-`ntfy.sh`, the body is ntfy plain text. The topic is whatever you put in the URL — modelizer
-does not ship a topic name.
+| Behaviour | Detail |
+|---|---|
+| Trigger | A window's `resetsAt` has passed, or `usedPercent` drops by 25+ points (a refresh the clock did not announce) |
+| Deduplication | Each `(provider, window, reset)` is delivered once |
+| Failure handling | Retries with backoff, then stops; the dashboard is unaffected |
+| Sharp-drop timing | Uses the detection time as `resetAt`, because the provider did not name the instant the window rolled |
+| Formats | `MODELIZER_WEBHOOK_FORMAT` = `json` or `ntfy`; unset + `ntfy.sh` host → ntfy plain text. The topic is whatever you put in the URL — modelizer does not ship a topic name |
 
 JSON body:
 
@@ -191,40 +212,35 @@ MODELIZER_WEBHOOK_URL=https://ntfy.sh/<topic>
 # MODELIZER_WEBHOOK_SECRET=       # only if the topic is protected
 ```
 
-A sharp drop uses the detection time as `resetAt`, because the provider did not name the instant
-the window actually rolled.
-
 ## How data is collected
 
 Each provider is an adapter (`src/adapters/`) with a stability tier:
 
-- **T1** official documented APIs (OpenRouter today; Anthropic/OpenAI admin APIs planned)
-- **T2** undocumented endpoints the community relies on (Z.AI, personal Cursor, personal Copilot).
-  These can break; failures are isolated per provider, raw responses are archived, and the UI
-  shows staleness instead of hiding it. The one opt-in exception is Claude's account-wide usage
-  endpoint (`CLAUDE_OAUTH_USAGE=1`, read-only, token never refreshed) — it is the only way to see
-  usage outside this machine. Modelizer does not scrape claude.ai or chatgpt.com.
-- **T3** local files and local CLIs. Claude Code transcripts under `~/.claude/projects` supply
-  token counts. Quota windows prefer the opt-in account-wide usage endpoint, then the statusLine
-  file, then `claude -p /usage --output-format json` (stdin closed, 5s timeout; failure is stale
-  and skipped for 6 hours), then a StopFailure hook. Codex prefers the documented
-  `codex app-server` method `account/rateLimits/read` (no model turn) and falls back to
-  `token_count` rate-limit snapshots in `~/.codex/sessions`. Windows are identified by length
-  (300 minutes = 5h, 10080 = weekly), not by primary/secondary slot.
-- **T4** UI-only, no programmatic path (ChatGPT subscription, OpenCode Zen credits — placeholder cards)
+| Tier | Meaning | Providers |
+|---|---|---|
+| **T1** | Official documented APIs | OpenRouter today; Anthropic/OpenAI admin APIs planned |
+| **T2** | Undocumented endpoints the community relies on — can break; failures are isolated per provider, raw responses are archived, the UI shows staleness instead of hiding it | Z.AI, personal Cursor, personal Copilot |
+| **T3** | Local files and local CLIs | Claude Code transcripts under `~/.claude/projects`; Codex app-server + session logs |
+| **T4** | UI-only, no programmatic path — placeholder cards | ChatGPT subscription, OpenCode Zen credits |
+
+**T2 exception:** Claude's account-wide usage endpoint (`CLAUDE_OAUTH_USAGE=1`, read-only, token
+never refreshed) is the one opt-in way to see usage outside this machine. Modelizer does not
+scrape claude.ai or chatgpt.com.
 
 ### Claude Code quota windows
 
 Transcripts do not include a reset time. Modelizer reads four sources, in order:
 
-0. **Account-wide usage (opt-in).** Set `CLAUDE_OAUTH_USAGE=1` to call Anthropic's usage endpoint
-   with the Claude Code login token from the macOS keychain. It returns the real `five_hour` and
-   `seven_day` percentages and reset times for the whole account, so it also covers claude.ai and
-   other machines — the same source CodexBar uses. Read-only: the token is never refreshed or
-   written back (two refreshers would race and log Claude Code out). A 401, 403, 429 or unexpected
-   body backs off for an hour. Unset, nothing leaves the machine.
+| # | Source | Notes |
+|---|---|---|
+| 0 | **Account-wide usage (opt-in)** | `CLAUDE_OAUTH_USAGE=1` calls Anthropic's usage endpoint with the Claude Code login token from the macOS keychain. Real `five_hour` / `seven_day` percentages + reset times for the whole account (covers claude.ai and other machines — the same source CodexBar uses). Read-only: the token is never refreshed or written back (two refreshers would race and log Claude Code out). A 401/403/429 or unexpected body backs off for an hour. Unset, nothing leaves the machine. |
+| 1 | **Status line** | `scripts/claude-statusline.ts` writes `~/.modelizer/claude-statusline.json` when Claude Code passes `rate_limits` (shipped in 2.1.80). Older builds omit them; the script still exits 0. Snapshots older than 6 hours are ignored. |
+| 2 | **`claude -p /usage --output-format json`** | Stdin closed, killed after 5s so it cannot hang the scheduler. Dead end on current builds (2.1.307+ answers with no window data); failure marks both windows stale, not retried for 6 hours. Skip with `CLAUDE_USAGE=0`. |
+| 3 | **StopFailure hook** | When a turn dies on a rate limit, the hook writes the message's reset time to `~/.modelizer/claude-rate-limit.json` (override with `MODELIZER_CLAUDE_HOOK_FILE`). That instant overrides the matching window from the sources above. |
 
-1. **Status line.** `scripts/claude-statusline.ts` reads the JSON Claude Code passes to a statusLine command and, when `rate_limits` is present, writes `~/.modelizer/claude-statusline.json`. Those fields (`five_hour` / `seven_day` `used_percentage` and `resets_at`) shipped in Claude Code 2.1.80. Older builds omit them; the script still exits 0 and modelizer ignores the file. A snapshot older than 6 hours is ignored. Add this to `~/.claude/settings.json`. If you already have a statusLine command, put it after `--` so this script records the limits and then runs yours with the same JSON on stdin:
+Status line setup — add to `~/.claude/settings.json`. If you already have a statusLine command,
+put it after `--` so this script records the limits and then runs yours with the same JSON on
+stdin:
 
 ```json
 {
@@ -236,11 +252,10 @@ Transcripts do not include a reset time. Modelizer reads four sources, in order:
 }
 ```
 
-Drop the `-- …` part when you have no existing command. Stdout is then a short line such as `5h 23% · 7d 41%`.
+Drop the `-- …` part when you have no existing command. Stdout is then a short line such as
+`5h 23% · 7d 41%`.
 
-2. **`claude -p /usage --output-format json`**. Stdin is closed and the process is killed after 5 seconds, so it cannot hang the scheduler. On Claude Code 2.1.307+ it answers with a `local_command` result (`Usage: 0 input, 0 output`) and no window data at all, so it is a dead end on current builds; on 2.1.7 it returned `Unknown skill: usage`. Either way the failure marks both windows stale and is not retried for 6 hours. Set `CLAUDE_USAGE=0` to skip the command.
-
-3. **StopFailure hook.** When a turn dies on a rate limit, the hook writes the message's reset time to `~/.modelizer/claude-rate-limit.json` (override with `MODELIZER_CLAUDE_HOOK_FILE`). That exact instant overrides the matching window from the sources above. Add this to `~/.claude/settings.json`:
+StopFailure hook setup — add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -257,14 +272,24 @@ Drop the `-- …` part when you have no existing command. Stdout is then a short
 }
 ```
 
-Set `CLAUDE_USAGE=0` to skip the `/usage` command, or `CODEX_APP_SERVER=0` to skip the Codex
+Skip flags: `CLAUDE_USAGE=0` skips the `/usage` command, `CODEX_APP_SERVER=0` skips the Codex
 app-server read. Both fall back without failing the other providers.
+
+### Codex window identification
+
+Windows are identified by length (300 minutes = 5h, 10080 = weekly), not by primary/secondary
+slot. Codex prefers the documented `codex app-server` method `account/rateLimits/read` (no model
+turn) and falls back to `token_count` rate-limit snapshots in `~/.codex/sessions`.
 
 ### Claude cost (API-equivalent)
 
 A subscription has no per-token bill, so modelizer prices the local tokens at list rates and shows
-the result as per-model spend ("API-equivalent"). Prices live in `src/pricing/anthropic.json`
-(USD per million tokens for input, output, cache read and cache write) and are checked in, so a
-poll never depends on a third-party host. They come from models.dev — the table CodexBar uses —
-and `bun run scripts/refresh-pricing.ts` regenerates the file. Unknown models (for example the
-`<synthetic>` turns Claude Code logs for local errors) simply carry no spend row.
+the result as per-model spend ("API-equivalent").
+
+| Fact | Detail |
+|---|---|
+| Prices | `src/pricing/anthropic.json` — USD per million tokens for input, output, cache read, cache write |
+| Checked in | A poll never depends on a third-party host |
+| Origin | models.dev — the table CodexBar uses |
+| Refresh | `bun run scripts/refresh-pricing.ts` regenerates the file |
+| Unknown models | Carry no spend row (e.g. the `<synthetic>` turns Claude Code logs for local errors) |
