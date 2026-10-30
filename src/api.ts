@@ -1,15 +1,24 @@
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { serveStatic } from "hono/bun";
 import type { Adapter, ProviderNote, StatusNote, UsagePoint } from "./adapters/types";
 import type { AuditEventRow, Db, SessionRow } from "./db";
 import {
+  appendSubscription,
+  type BillingPeriod,
   DEFAULT_SUBSCRIPTIONS_PATH,
   loadSubscriptions,
+  removeSubscription,
+  setSubscriptionOrder,
   SubscriptionCatalog,
   SubscriptionConfigError,
   type CurrencyTotal,
   type Subscription,
+  type SubscriptionEntry,
+  type SubscriptionState,
+  type SubscriptionUpdate,
+  updateSubscription,
 } from "./subscriptions";
 import {
   appendModel,
@@ -31,6 +40,7 @@ import {
   parseModelRef,
 } from "./openrouter";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
+import { registerProviderRoutes, type ProviderRouteDeps } from "./api-providers";
 
 export interface DegradedEndpoint {
   endpoint: string;
@@ -121,7 +131,7 @@ function hashesEqual(given: string, expected: string): boolean {
   return a.equals(b);
 }
 
-export function buildApi(deps: {
+export function buildApi(deps: ProviderRouteDeps & {
   db: Db;
   adapters: Adapter[];
   env: Record<string, string | undefined>;
@@ -137,6 +147,7 @@ export function buildApi(deps: {
   const fetchFn = deps.fetchFn ?? fetch;
   const app = new Hono();
   const modelsPath = () => env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
+  const subscriptionsPath = () => env.MODELIZER_SUBSCRIPTIONS?.trim() || DEFAULT_SUBSCRIPTIONS_PATH;
   const expectedToken = deps.token ?? env.MODELIZER_TOKEN?.trim() ?? "";
 
   /**
@@ -156,7 +167,7 @@ export function buildApi(deps: {
   app.get("/api/overview", (c) => {
     const states = new Map(db.getAllAdapterStates().map((s) => [s.provider, s]));
     const latest = db.latestPoints();
-    const planRows = new Map(readSubscriptions(db, env, now()).rows.map((r) => [r.provider, r]));
+    const planRows = new Map(readSubscriptions(db, subscriptionsPath(), now()).rows.map((r) => [r.provider, r]));
     const providers: OverviewProvider[] = adapters.map((a) => {
       const state = states.get(a.id);
       const pollEveryMs = a.pollEveryMs;
@@ -225,6 +236,8 @@ export function buildApi(deps: {
       planOnly: true,
     };
   }
+
+  registerProviderRoutes(app, { ...deps, now });
 
   app.get("/api/providers/:id/raw", (c) => {
     const id = c.req.param("id");
@@ -337,7 +350,7 @@ export function buildApi(deps: {
   });
 
   app.get("/api/subscriptions", (c) => {
-    const view = readSubscriptions(db, env, now());
+    const view = readSubscriptions(db, subscriptionsPath(), now());
     const generatedAt = now().toISOString();
     if (view.error !== null) {
       const broken: SubscriptionsResponse = {
@@ -359,6 +372,88 @@ export function buildApi(deps: {
     return c.json(body);
   });
 
+  /**
+   * Reorder the saved entries: providers arrive in display sequence, the first getting
+   * `order = 1`. Entries not listed keep the price sort after the ranked ones.
+   */
+  app.put("/api/subscriptions/order", async (c) => {
+    const path = subscriptionsPath();
+    try {
+      const providers = readProviderList(await c.req.json().catch(() => null));
+      if (new Set(providers).size !== providers.length) {
+        return c.json({ error: "provider order contains duplicates" }, 409);
+      }
+      const entries = loadSubscriptions(path);
+      const unknown = providers.filter((provider) => !entries.some((entry) => entry.provider === provider));
+      if (unknown.length > 0) {
+        return c.json({ error: `provider "${unknown[0] ?? ""}" is not configured` }, 404);
+      }
+      setSubscriptionOrder(providers, path);
+      return c.json({ ordered: providers.length, path });
+    } catch (err) {
+      return subscriptionWriteError(c, err);
+    }
+  });
+
+  /**
+   * Add a `[[subscription]]` block. The response carries the saved entry itself, never a
+   * merged page row — the caller already knows what the provider reported.
+   */
+  app.post("/api/subscriptions", async (c) => {
+    const path = subscriptionsPath();
+    try {
+      const entry = readNewSubscription(await c.req.json().catch(() => null));
+      if (loadSubscriptions(path).some((saved) => saved.provider === entry.provider)) {
+        return c.json({ error: `provider "${entry.provider}" is already configured` }, 409);
+      }
+      appendSubscription(entry, path);
+      const saved = loadSubscriptions(path).find((item) => item.provider === entry.provider);
+      if (saved === undefined) return c.json({ error: "the saved entry did not appear in the file" }, 502);
+      return c.json({ entry: saved, path }, 201);
+    } catch (err) {
+      return subscriptionWriteError(c, err);
+    }
+  });
+
+  /**
+   * Edit one saved block: a field absent from the body keeps its saved value; `null` — or
+   * `""` for a text field — clears it. The response is the saved entry, not a merged row.
+   */
+  app.put("/api/subscriptions/:provider", async (c) => {
+    const path = subscriptionsPath();
+    try {
+      const provider = decodeProvider(c.req.param("provider"));
+      const changes = readSubscriptionChanges(await c.req.json().catch(() => null));
+      if (!loadSubscriptions(path).some((entry) => entry.provider === provider)) {
+        return c.json({ error: `provider "${provider}" is not configured` }, 404);
+      }
+      updateSubscription(provider, changes, path);
+      const saved = loadSubscriptions(path).find((entry) => entry.provider === provider);
+      if (saved === undefined) return c.json({ error: "the saved entry did not appear in the file" }, 502);
+      return c.json({ entry: saved, path });
+    } catch (err) {
+      return subscriptionWriteError(c, err);
+    }
+  });
+
+  /**
+   * Remove the saved override only. A provider-detected plan lives in the DB facts and stays:
+   * deleting an override cancels nothing, so the page still lists the row with its fact source.
+   */
+  app.delete("/api/subscriptions/:provider", (c) => {
+    const path = subscriptionsPath();
+    try {
+      const provider = decodeProvider(c.req.param("provider"));
+      if (!loadSubscriptions(path).some((entry) => entry.provider === provider)) {
+        return c.json({ error: `provider "${provider}" is not configured` }, 404);
+      }
+      removeSubscription(provider, path);
+      return c.json({ removed: provider, path });
+    } catch (err) {
+      return subscriptionWriteError(c, err);
+    }
+  });
+
   app.use("*", serveStatic({ root: "./web/dist" }));
   app.get("*", serveStatic({ path: "./web/dist/index.html" }));
 
@@ -376,9 +471,7 @@ interface SubscriptionView {
  * Merge subscriptions.toml (price, renewal day) with the last plan facts each adapter stored
  * (plan, billing state). Never throws: a broken config becomes a message on the page.
  */
-function readSubscriptions(db: Db, env: Record<string, string | undefined>, at: Date): SubscriptionView {
-  const override = env.MODELIZER_SUBSCRIPTIONS?.trim();
-  const configPath = override !== undefined && override !== "" ? override : DEFAULT_SUBSCRIPTIONS_PATH;
+function readSubscriptions(db: Db, configPath: string, at: Date): SubscriptionView {
   try {
     const entries = loadSubscriptions(configPath);
     const facts = db.getSubscriptionFacts().map((row) => row.facts);
@@ -387,6 +480,149 @@ function readSubscriptions(db: Db, env: Record<string, string | undefined>, at: 
   } catch (err) {
     const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
     return { rows: [], totals: [], configPath, error: message };
+  }
+}
+
+/** A subscription route failure that already knows its HTTP status. */
+class SubscriptionRouteError extends Error {
+  constructor(message: string, readonly status: 400 | 404 | 409 | 422) {
+    super(message);
+  }
+}
+
+/**
+ * Map a failed subscription write the way the models routes map theirs: request-shape errors
+ * keep their status (400/404/409), write-layer rejections — bad values, an unparsable file —
+ * are 422. One request, one answer: nothing here retries or cascades.
+ */
+function subscriptionWriteError(c: Context, err: unknown): Response {
+  if (err instanceof SubscriptionRouteError) return c.json({ error: err.message }, err.status);
+  if (err instanceof SubscriptionConfigError) return c.json({ error: err.message }, 422);
+  return c.json({ error: `could not save the subscription: ${(err as Error).message}` }, 422);
+}
+
+/** Entry fields the routes copy as plain strings; the enum pair gets its own checks below. */
+const SUBSCRIPTION_TEXT_FIELDS = ["plan", "label", "note", "currency", "renewsAt", "endsAt"] as const;
+/** Entry fields the routes copy as numbers. */
+const SUBSCRIPTION_NUMBER_FIELDS = ["order", "price", "priceNext", "renewsDay", "seats"] as const;
+const PERIOD_VALUES = "monthly or annual";
+const STATE_VALUES = "one of active, trialing, cancelled, past_due, unknown";
+
+/** The period and state sets the TOML layer accepts, mirrored so subscriptions.ts stays untouched. */
+const BILLING_PERIODS = ["monthly", "annual"] as const;
+const SUBSCRIPTION_STATES = ["active", "trialing", "cancelled", "past_due", "unknown"] as const;
+
+function isBillingPeriod(value: string): value is BillingPeriod {
+  return (BILLING_PERIODS as readonly string[]).includes(value);
+}
+
+function isSubscriptionState(value: string): value is SubscriptionState {
+  return (SUBSCRIPTION_STATES as readonly string[]).includes(value);
+}
+
+/** The request body as a field bag; a body that is not a JSON object is refused outright. */
+function subscriptionBody(body: unknown): Record<string, unknown> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new SubscriptionRouteError("the request body must be a JSON object", 400);
+  }
+  return body as Record<string, unknown>;
+}
+
+/**
+ * One text field as tri-state: undefined = absent from the body, null = clear (explicit null
+ * or an empty string), otherwise the value. A wrong JSON type is a 400.
+ */
+function optionalTextField(fields: Record<string, unknown>, field: string): string | null | undefined {
+  const value = fields[field];
+  if (value === undefined || value === null || value === "") return value === "" ? null : value;
+  if (typeof value !== "string") throw new SubscriptionRouteError(`${field} must be a string`, 400);
+  return value;
+}
+
+/** One number field, same tri-state convention; an empty string is not a number, so 400. */
+function optionalNumberField(fields: Record<string, unknown>, field: string): number | null | undefined {
+  const value = fields[field];
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new SubscriptionRouteError(`${field} must be a number`, 400);
+  }
+  return value;
+}
+
+/** One enum-restricted field, same tri-state convention; a value outside the set is a 422. */
+function optionalEnumField<T extends string>(
+  fields: Record<string, unknown>,
+  field: string,
+  guard: (value: string) => value is T,
+  expected: string,
+): T | null | undefined {
+  const value = fields[field];
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") throw new SubscriptionRouteError(`${field} must be a string`, 400);
+  if (value === "") return null;
+  if (!guard(value)) throw new SubscriptionRouteError(`${field} must be ${expected}`, 422);
+  return value;
+}
+
+/** The entry a POST appends: `provider` plus every field worth saving (clears mean "leave unset"). */
+function readNewSubscription(body: unknown): SubscriptionEntry {
+  const fields = subscriptionBody(body);
+  const provider = typeof fields.provider === "string" ? fields.provider.trim() : "";
+  if (provider === "") {
+    throw new SubscriptionRouteError("provider is required and must be a non-empty string", 400);
+  }
+  const entry: SubscriptionEntry = { provider };
+  for (const field of SUBSCRIPTION_TEXT_FIELDS) {
+    const value = optionalTextField(fields, field);
+    if (value !== null && value !== undefined) entry[field] = value;
+  }
+  for (const field of SUBSCRIPTION_NUMBER_FIELDS) {
+    const value = optionalNumberField(fields, field);
+    if (value !== null && value !== undefined) entry[field] = value;
+  }
+  const period = optionalEnumField(fields, "period", isBillingPeriod, PERIOD_VALUES);
+  if (period !== null && period !== undefined) entry.period = period;
+  const state = optionalEnumField(fields, "state", isSubscriptionState, STATE_VALUES);
+  if (state !== null && state !== undefined) entry.state = state;
+  return entry;
+}
+
+/** The field changes a PUT applies: absent = keep the saved value, null or "" = clear it. */
+function readSubscriptionChanges(body: unknown): SubscriptionUpdate {
+  const fields = subscriptionBody(body);
+  const changes: SubscriptionUpdate = {};
+  for (const field of SUBSCRIPTION_TEXT_FIELDS) {
+    const value = optionalTextField(fields, field);
+    if (value !== undefined) changes[field] = value;
+  }
+  for (const field of SUBSCRIPTION_NUMBER_FIELDS) {
+    const value = optionalNumberField(fields, field);
+    if (value !== undefined) changes[field] = value;
+  }
+  const period = optionalEnumField(fields, "period", isBillingPeriod, PERIOD_VALUES);
+  if (period !== undefined) changes.period = period;
+  const state = optionalEnumField(fields, "state", isSubscriptionState, STATE_VALUES);
+  if (state !== undefined) changes.state = state;
+  return changes;
+}
+
+/** The `providers` array of an order request, in the wanted display sequence. */
+function readProviderList(body: unknown): string[] {
+  const list = subscriptionBody(body).providers;
+  if (!Array.isArray(list)) throw new SubscriptionRouteError("providers must be an array of provider ids", 400);
+  const providers = list.filter((id): id is string => typeof id === "string" && id.trim() !== "");
+  if (providers.length !== list.length) {
+    throw new SubscriptionRouteError("providers must be an array of provider ids", 400);
+  }
+  return providers.map((id) => id.trim());
+}
+
+/** The :provider path parameter, decoded like the model ids; bad percent-encoding is a 400. */
+function decodeProvider(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new SubscriptionRouteError("the provider id must be URL-encoded", 400);
   }
 }
 
