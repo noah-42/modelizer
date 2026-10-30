@@ -118,6 +118,90 @@ describe("detectReset", () => {
 });
 
 describe("notifier delivery", () => {
+  test("a successful in-flight delivery retains dedupe when its provider is disabled", async () => {
+    let enabled = true;
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        hits += 1;
+        enabled = false;
+        return new Response("ok");
+      },
+    });
+    const db = openDb(":memory:");
+    const notifier = createNotifier({
+      db,
+      env: { MODELIZER_WEBHOOK_URL: `http://127.0.0.1:${server.port}/hook` },
+      isProviderEnabled: () => enabled,
+      retryDelaysMs: [],
+      log: () => {},
+    });
+    if (!notifier) throw new TypeError("Expected a configured notifier");
+    try {
+      db.insertPoints([point({})]);
+      await notifier.scan(new Date("2026-10-18T12:00:00.000Z"));
+      await notifier.scan(new Date("2026-10-18T15:00:05.000Z"));
+      enabled = true;
+      await notifier.scan(new Date("2026-10-18T15:01:00.000Z"));
+      expect(hits).toBe(1);
+      expect(db.raw.query<{ attempts: number; delivered_at: string | null }, []>(
+        "SELECT attempts, delivered_at FROM reset_notices",
+      ).all()).toEqual([{ attempts: 1, delivered_at: "2026-10-18T15:00:05.000Z" }]);
+    } finally {
+      server.stop(true);
+      db.close();
+    }
+  });
+
+  test("disabled providers skip new resets and pending delivery while retaining history and dedupe rows", async () => {
+    let enabled = true;
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        hits += 1;
+        return new Response("", { status: hits === 1 ? 500 : 200 });
+      },
+    });
+    const db = openDb(":memory:");
+    const notifier = createNotifier({
+      db,
+      env: { MODELIZER_WEBHOOK_URL: `http://127.0.0.1:${server.port}/hook` },
+      isProviderEnabled: (id) => enabled && id === "claude",
+      retryDelaysMs: [],
+      log: () => {},
+    });
+    if (!notifier) throw new TypeError("Expected a configured notifier");
+    try {
+      db.insertPoints([point({})]);
+      await notifier.scan(new Date("2026-10-18T12:00:00.000Z"));
+      await notifier.scan(new Date("2026-10-18T15:00:05.000Z"));
+      expect(hits).toBe(1);
+      const pending = db.raw.query<{ attempts: number; delivered_at: string | null }, []>(
+        "SELECT attempts, delivered_at FROM reset_notices",
+      ).all();
+      enabled = false;
+      db.insertPoints([point({ provider: "codex" })]);
+      await notifier.scan(new Date("2026-10-18T15:01:00.000Z"));
+      expect(hits).toBe(1);
+      expect(db.raw.query<{ attempts: number; delivered_at: string | null }, []>(
+        "SELECT attempts, delivered_at FROM reset_notices",
+      ).all()).toEqual(pending);
+      expect(db.raw.query<{ provider: string }, []>("SELECT provider FROM window_snapshots").all()).toEqual([{ provider: "claude" }]);
+      expect(db.latestPoints().map((p) => p.provider).sort()).toEqual(["claude", "codex"]);
+
+      enabled = true;
+      await notifier.scan(new Date("2026-10-18T15:02:00.000Z"));
+      await notifier.scan(new Date("2026-10-18T15:03:00.000Z"));
+      expect(hits).toBe(2);
+      expect(db.raw.query<{ attempts: number }, []>("SELECT attempts FROM reset_notices").all()).toEqual([{ attempts: 2 }]);
+    } finally {
+      server.stop(true);
+      db.close();
+    }
+  });
+
   test("unset URL is off", () => {
     const db = openDb(join(mkdtempSync(join(tmpdir(), "modelizer-notify-")), "n.db"));
     expect(createNotifier({ db, env: {} })).toBeUndefined();

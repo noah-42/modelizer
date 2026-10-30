@@ -5,6 +5,7 @@ import { openDb } from "./db";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { credentialStatus, resolveEnv, writeSecret, type SecurityRunner } from "./secrets";
 
 const POLL_EVERY = 15 * 60_000;
 
@@ -41,7 +42,7 @@ function fakeAdapter(overrides: Partial<Adapter> = {}): Adapter {
   };
 }
 
-function harness(adapters: Adapter[], env: Record<string, string> = {}) {
+function harness(adapters: Adapter[], env: Record<string, string | undefined> = resolveEnv({}, { platform: "linux" })) {
   let nowMs = Date.parse("2026-10-03T00:00:00Z");
   const db = openDb(join(mkdtempSync(join(tmpdir(), "modelizer-sched-")), "s.db"));
   const scheduler = new Scheduler({
@@ -63,6 +64,133 @@ function harness(adapters: Adapter[], env: Record<string, string> = {}) {
 }
 
 describe("scheduler", () => {
+  test("reconfiguration removes disabled providers and starts added providers at their normal cadence", async () => {
+    const calls: string[] = [];
+    const counted = (id: string) => fakeAdapter({
+      id,
+      collect: async () => {
+        calls.push(id);
+        return [{ endpoint: "e", url: "u", status: 200, body: "{}", json: {}, headers: {} }];
+      },
+    });
+    const retained = counted("openrouter");
+    const h = harness([counted("zai"), retained]);
+    try {
+      await h.scheduler.tick();
+      h.advance(POLL_EVERY / 2);
+      h.scheduler.reconfigure([retained, counted("moonshot")]);
+      expect(h.scheduler.isDue("zai")).toBe(false);
+      await h.scheduler.tick();
+      expect(calls).toEqual(["zai", "openrouter"]);
+      h.advance(POLL_EVERY / 2);
+      await h.scheduler.tick();
+      expect(calls).toEqual(["zai", "openrouter", "openrouter"]);
+      h.advance(POLL_EVERY / 2);
+      await h.scheduler.tick();
+      expect(calls).toEqual(["zai", "openrouter", "openrouter", "moonshot"]);
+      h.scheduler.reconfigure([]);
+      h.advance(POLL_EVERY);
+      expect(await h.scheduler.tick()).toEqual([]);
+    } finally {
+      h.db.close();
+    }
+  });
+
+  for (const environmentKey of ["", "environment-token"]) {
+    test(`the next poll reads refreshed Keychain credentials with ${environmentKey ? "environment precedence" : "no environment override"}`, async () => {
+      let stored = "old-token";
+      const run: SecurityRunner = (args) => {
+        if (args[args.indexOf("-a") + 1] !== "ZAI_API_KEY") return { status: 44, stdout: "" };
+        if (args[0] === "add-generic-password") stored = args[args.indexOf("-w") + 1] ?? "";
+        return { status: 0, stdout: stored };
+      };
+      const options = { platform: "darwin", run } as const;
+      const env = resolveEnv(environmentKey ? { ZAI_API_KEY: environmentKey } : {}, options);
+      const seen: Array<string | undefined> = [];
+      const adapter = fakeAdapter({
+        collect: async (ctx) => {
+          seen.push(ctx.env.ZAI_API_KEY);
+          return [{ endpoint: "e", url: "u", status: 200, body: "{}", json: {}, headers: {} }];
+        },
+      });
+      const h = harness([adapter], env);
+      try {
+        await h.scheduler.tick();
+        writeSecret("ZAI_API_KEY", "new-token", options);
+        h.scheduler.reconfigure([adapter]);
+        h.advance(POLL_EVERY);
+        await h.scheduler.tick();
+        expect(seen).toEqual([environmentKey || "old-token", environmentKey || "new-token"]);
+        expect(credentialStatus(env, "ZAI_API_KEY").source).toBe(environmentKey ? "env" : "keychain");
+      } finally {
+        h.db.close();
+      }
+    });
+  }
+
+  test("reconfiguration ignores unknown providers and records an audit event", async () => {
+    const events: string[] = [];
+    const db = openDb(":memory:");
+    const scheduler = new Scheduler({
+      adapters: [fakeAdapter()], db, env: resolveEnv({}, { platform: "linux" }),
+      audit: (event) => { events.push(event.level); },
+    });
+    try {
+      expect(() => scheduler.reconfigure([fakeAdapter({ id: "unknown" })])).not.toThrow();
+      expect(scheduler.adapter("unknown")).toBeUndefined();
+      expect((await scheduler.tick()).map((outcome) => outcome.provider)).toEqual(["fake"]);
+      expect(events[0]).toBe("warn");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("credential refresh failures leave the running provider set intact", async () => {
+    let fail = false;
+    const env = resolveEnv({}, {
+      platform: "darwin",
+      run: () => {
+        if (fail) throw new TypeError("credential runner failed");
+        return { status: 44, stdout: "" };
+      },
+    });
+    const h = harness([fakeAdapter()], env);
+    try {
+      fail = true;
+      expect(() => h.scheduler.reconfigure([])).not.toThrow();
+      expect((await h.scheduler.tick()).map((outcome) => outcome.provider)).toEqual(["fake"]);
+    } finally {
+      h.db.close();
+    }
+  });
+
+  test("reconfiguration and overlapping ticks never duplicate an in-flight poll", async () => {
+    const collected = Promise.withResolvers<RawPoll[]>();
+    let calls = 0;
+    const adapter = fakeAdapter({
+      collect: () => {
+        calls += 1;
+        return collected.promise;
+      },
+    });
+    const h = harness([adapter]);
+    try {
+      const first = h.scheduler.tick();
+      h.scheduler.reconfigure([]);
+      h.scheduler.reconfigure([adapter]);
+      h.advance(POLL_EVERY);
+      const second = h.scheduler.tick();
+      collected.resolve([{ endpoint: "e", url: "u", status: 200, body: "{}", json: {}, headers: {} }]);
+      await Promise.all([first, second]);
+      expect(calls).toBe(1);
+      h.advance(POLL_EVERY);
+      await h.scheduler.tick();
+      expect(calls).toBe(2);
+    } finally {
+      h.db.close();
+    }
+  });
+
   test("success persists points, raw polls, and state; reschedules one interval out", async () => {
     const h = harness([fakeAdapter()]);
     const outcome = await h.scheduler.runProvider("fake");

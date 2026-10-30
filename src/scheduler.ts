@@ -1,5 +1,7 @@
 import type { Adapter, RawPoll, UsagePoint } from "./adapters/types";
 import type { AuditLevel, Db } from "./db";
+import { ADAPTERS_BY_ID } from "./adapters";
+import { refreshCredentials } from "./secrets";
 
 export interface AuditEvent {
   at: string;
@@ -52,7 +54,9 @@ function retryAfterMs(poll: RawPoll): number | null {
 }
 
 export class Scheduler {
-  private readonly adapters: Adapter[];
+  private adapters: Adapter[];
+  private readonly knownIds: Set<string>;
+  private readonly inFlight = new Map<string, Promise<PollOutcome>>();
   private readonly db: Db;
   private readonly env: Record<string, string | undefined>;
   private readonly clock: () => Date;
@@ -65,7 +69,8 @@ export class Scheduler {
   private nextDue = new Map<string, number>();
 
   constructor(deps: SchedulerDeps) {
-    this.adapters = deps.adapters;
+    this.adapters = [...deps.adapters];
+    this.knownIds = new Set([...ADAPTERS_BY_ID.keys(), ...deps.adapters.map((a) => a.id)]);
     this.db = deps.db;
     this.env = deps.env;
     this.clock = deps.clock ?? (() => new Date());
@@ -85,15 +90,53 @@ export class Scheduler {
     return this.adapters.find((a) => a.id === id);
   }
 
+  /** Apply enabled adapters and refresh the shared credential snapshot; failures stay contained. */
+  reconfigure(adapters: Adapter[]): void {
+    try {
+      if (adapters.some((a) => !this.knownIds.has(a.id))) {
+        this.log("scheduler: ignored reconfiguration with unknown provider");
+        this.emitAudit(this.clock().toISOString(), null, "warn", "unknown provider reconfiguration ignored");
+        return;
+      }
+      refreshCredentials(this.env);
+      const now = this.nowMs();
+      const nextIds = new Set(adapters.map((a) => a.id));
+      for (const id of this.nextDue.keys()) {
+        if (!nextIds.has(id)) this.nextDue.delete(id);
+      }
+      for (const adapter of adapters) {
+        if (!this.adapter(adapter.id)) this.nextDue.set(adapter.id, now + adapter.pollEveryMs);
+      }
+      this.adapters = [...adapters];
+    } catch {
+      // Credential runner errors can contain secrets; report only the operation that failed.
+      console.error("scheduler: reconfiguration failed");
+    }
+  }
+
   private nowMs(): number {
     return this.clock().getTime();
   }
 
   isDue(id: string): boolean {
-    return (this.nextDue.get(id) ?? 0) <= this.nowMs();
+    return this.adapter(id) !== undefined && (this.nextDue.get(id) ?? 0) <= this.nowMs();
   }
 
+  /** Coalesce concurrent requests for a provider, including across reconfiguration. */
   async runProvider(id: string): Promise<PollOutcome> {
+    const pending = this.inFlight.get(id);
+    if (pending) return pending;
+    const run = this.pollProvider(id);
+    this.inFlight.set(id, run);
+    try {
+      return await run;
+    } finally {
+      this.inFlight.delete(id);
+      if (!this.adapter(id)) this.nextDue.delete(id);
+    }
+  }
+
+  private async pollProvider(id: string): Promise<PollOutcome> {
     const adapter = this.adapter(id);
     if (!adapter) throw new Error(`unknown provider: ${id}`);
     const capturedAt = new Date(this.nowMs()).toISOString();
@@ -179,9 +222,11 @@ export class Scheduler {
   }
 
   /** Poll every adapter whose interval elapsed. Returns outcomes; never throws. */
-  async tick(): Promise<PollOutcome[]> {    const due = this.adapters.filter((a) => this.isDue(a.id)).map((a) => a.id);
+  async tick(): Promise<PollOutcome[]> {
+    const due = this.adapters.filter((a) => this.isDue(a.id)).map((a) => a.id);
     const outcomes: PollOutcome[] = [];
     for (const id of due) {
+      if (!this.isDue(id)) continue;
       try {
         outcomes.push(await this.runProvider(id));
       } catch (err) {

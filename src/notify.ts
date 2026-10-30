@@ -151,6 +151,8 @@ export function createNotifier(deps: {
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
+  /** Live enablement check; disabled providers keep their snapshots and dedupe history. */
+  isProviderEnabled?: (id: string) => boolean;
   /** Delays between in-process retries. Defaults to 500ms then 2s. */
   retryDelaysMs?: number[];
 }): Notifier | undefined {
@@ -227,10 +229,11 @@ export function createNotifier(deps: {
     "UPDATE reset_notices SET delivered_at = $at, attempts = $attempts, next_attempt_at = NULL WHERE dedupe_key = $key",
   );
 
-  async function postOnce(event: ResetEvent): Promise<void> {
+  async function postOnce(event: ResetEvent): Promise<boolean> {
     const req = buildWebhookRequest({ url, format, secret, event });
     let lastError = "delivery failed";
     for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+      if (deps.isProviderEnabled?.(event.provider) === false) return false;
       try {
         const res = await fetchFn(req.url, {
           method: "POST",
@@ -239,7 +242,7 @@ export function createNotifier(deps: {
           redirect: "manual",
           signal: AbortSignal.timeout(10_000),
         });
-        if (res.status >= 200 && res.status < 300) return;
+        if (res.status >= 200 && res.status < 300) return true;
         lastError = `HTTP ${res.status}`;
         const retryable = res.status === 429 || res.status >= 500;
         if (!retryable) break;
@@ -261,7 +264,7 @@ export function createNotifier(deps: {
     if (row?.next_attempt_at && Date.parse(row.next_attempt_at) > now.getTime()) return;
     const attempts = (row?.attempts ?? 0) + 1;
     try {
-      await postOnce(event);
+      if (!await postOnce(event)) return;
       markDelivered.run({ $key: event.dedupeKey, $at: now.toISOString() });
       log(`notifier: delivered ${event.provider} ${event.window}`);
     } catch (err) {
@@ -288,6 +291,7 @@ export function createNotifier(deps: {
         quota_window: string;
       }>;
       for (const row of pending) {
+        if (deps.isProviderEnabled?.(row.provider) === false) continue;
         try {
           const payload = JSON.parse(row.payload) as ResetEvent;
           await tryDeliver(payload, at);
@@ -307,6 +311,7 @@ export function createNotifier(deps: {
       const prevByKey = new Map(snaps.map((s) => [`${s.provider}|${s.quota_window}`, s]));
 
       for (const w of current) {
+        if (deps.isProviderEnabled?.(w.provider) === false) continue;
         const key = `${w.provider}|${w.window}`;
         const prev = prevByKey.get(key);
         if (prev) {
