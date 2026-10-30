@@ -255,3 +255,184 @@ export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
   if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
   return body;
 }
+
+// ---- manage tab ----
+
+/** One saved `[[subscription]]` block: the manage tab edits these, never merged rows. */
+export interface SavedSubscription {
+  provider: string;
+  order?: number;
+  plan?: string;
+  label?: string;
+  note?: string;
+  price?: number;
+  priceNext?: number;
+  currency?: string;
+  period?: "monthly" | "annual";
+  renewsDay?: number;
+  renewsAt?: string;
+  endsAt?: string;
+  state?: SubscriptionState;
+  seats?: number;
+}
+
+export interface SubscriptionConfigResponse {
+  path: string;
+  entries: SavedSubscription[];
+  error?: string;
+}
+
+/** Saved overrides only — the manage tab's source of truth. */
+export async function fetchSubscriptionConfig(): Promise<SubscriptionConfigResponse> {
+  const res = await fetch("/api/subscriptions/config");
+  const body = (await res.json()) as SubscriptionConfigResponse;
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body;
+}
+
+/** Add a `[[subscription]]` block; unknown optional fields are simply left unset. */
+export async function addSubscription(entry: Partial<SavedSubscription> & { provider: string }): Promise<SavedSubscription> {
+  const res = await fetch("/api/subscriptions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(entry),
+  });
+  const body = (await res.json()) as { entry?: SavedSubscription; error?: string };
+  if (!res.ok || body.entry === undefined) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body.entry;
+}
+
+/** Edit one saved block: absent = keep, null/"" = clear. */
+export async function updateSubscription(provider: string, changes: Partial<SavedSubscription>): Promise<SavedSubscription> {
+  const res = await fetch(`/api/subscriptions/${encodeURIComponent(provider)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  const body = (await res.json()) as { entry?: SavedSubscription; error?: string };
+  if (!res.ok || body.entry === undefined) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body.entry;
+}
+
+/** Remove the saved override only — a provider-detected plan keeps showing on the Subscriptions page. */
+export async function deleteSubscription(provider: string): Promise<void> {
+  const res = await fetch(`/api/subscriptions/${encodeURIComponent(provider)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/** Persist a subscription display order; unlisted entries keep the price sort after ranked ones. */
+export async function reorderSubscriptions(providers: string[]): Promise<void> {
+  const res = await fetch("/api/subscriptions/order", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ providers }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/** Token status: whether a credential is set, and where it lives — never the value. */
+export interface TokenStatus {
+  set: boolean;
+  source: "env" | "keychain" | "absent";
+  shadowed?: boolean;
+}
+
+/** One provider row of the manage listing. */
+export interface ManageProvider {
+  id: string;
+  displayName: string;
+  enabled: boolean;
+  order: number;
+  missingCredentials: string[];
+  tokens: Record<string, TokenStatus>;
+  authMethod: string;
+  appAuthPresent?: boolean;
+  oauthUsageEnabled?: boolean;
+  authHealth: "no-token" | "rejected" | "quota" | "ok" | "unknown";
+}
+
+export interface ManageProvidersResponse {
+  providers: ManageProvider[];
+  tokens: Record<string, TokenStatus>;
+  error?: string;
+}
+
+export async function fetchManageProviders(): Promise<ManageProvidersResponse> {
+  const res = await fetch("/api/providers/manage");
+  const body = (await res.json()) as ManageProvidersResponse;
+  if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body;
+}
+
+export async function setProviderEnabled(id: string, enabled: boolean): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/enabled`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/** Remove an integration: disables it and drops it from the saved order; nothing else is touched. */
+export async function removeProvider(id: string): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+export async function reorderProviders(ids: string[]): Promise<void> {
+  const res = await fetch("/api/providers/order", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/** Store a credential in the Keychain; the value is sent once and never comes back. */
+export async function setToken(id: string, name: string, value: string): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+export async function removeToken(id: string, name: string): Promise<void> {
+  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/** Claude account-wide OAuth opt-in; process-local, nothing is written to Claude's own stores. */
+export async function setClaudeOAuthUsage(enabled: boolean): Promise<void> {
+  const res = await fetch("/api/providers/claude/oauth-usage", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
+}

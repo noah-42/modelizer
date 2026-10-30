@@ -54,6 +54,7 @@ body {
 }
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
@@ -683,4 +684,186 @@ code {
 }
 .warn-text {
   color: var(--warn);
+}
+
+/* ---- manage view: pure white regardless of the dashboard theme ----
+   The white contract is scoped to .manage-view only; the dashboard's
+   dark-mode rules above are deliberately untouched. */
+.manage-view {
+  background: #ffffff;
+  color: #111318;
+  color-scheme: light;
+  border-radius: 10px;
+  padding: 4px 2px 12px;
+}
+.manage-view .muted {
+  color: #6b7280;
+}
+.manage-banner {
+  position: relative;
+  z-index: 1;
+}
+.manage-section h2 {
+  margin: 6px 0 4px;
+  font-size: 15px;
+}
+.manage-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.manage-add {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.manage-input {
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #d7dbe2;
+  background: #ffffff;
+  color: #111318;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+.manage-price {
+  width: 96px;
+}
+.manage-currency {
+  width: 72px;
+  text-transform: uppercase;
+}
+.manage-day {
+  width: 76px;
+}
+.manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.manage-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+  border: 1px solid #eceef2;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.manage-name {
+  min-width: 180px;
+}
+.manage-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.manage-small {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid #d7dbe2;
+  background: #ffffff;
+  color: #111318;
+  cursor: pointer;
+  min-height: 44px;
+}
+.manage-small:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.manage-danger {
+  color: #b42318;
+  border-color: #e6b8b3;
+}
+.manage-provider {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.manage-provider-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.manage-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #d7dbe2;
+  background: #f6f7f9;
+}
+.manage-health-ok {
+  color: #067647;
+  border-color: #abefc6;
+  background: #ecfdf3;
+}
+.manage-health-quota {
+  color: #b54708;
+  border-color: #fedf89;
+  background: #fffaeb;
+}
+.manage-health-rejected,
+.manage-health-no-token {
+  color: #b42318;
+  border-color: #e6b8b3;
+  background: #fef3f2;
+}
+.manage-auth {
+  font-size: 12px;
+  color: #6b7280;
+}
+.manage-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  cursor: pointer;
+}
+.manage-toggle input {
+  width: 16px;
+  height: 16px;
+}
+.manage-missing {
+  font-size: 12px;
+  color: #b54708;
+}
+.manage-token-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+  padding: 4px 0 4px 10px;
+  border-top: 1px dashed #eceef2;
+}
+.manage-token-row code {
+  font-size: 12px;
+}
+.manage-token-form {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+@media (max-width: 480px) {
+  .manage-row,
+  .manage-provider-head {
+    align-items: stretch;
+  }
+  .manage-name {
+    min-width: 0;
+  }
+  .manage-actions {
+    margin-left: 0;
+  }
+  .manage-input {
+    flex: 1 1 120px;
+  }
 }

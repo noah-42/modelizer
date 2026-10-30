@@ -216,4 +216,20 @@ describe("subscription route errors", () => {
     expect((await call(brokenApp, "POST", "/api/subscriptions", { provider: "claude" })).status).toBe(422);
     expect(readFileSync(subscriptionsFile, "utf8")).toBe(broken);
   });
+
+  test("lists the saved overrides only via /api/subscriptions/config", async () => {
+    const app = appWith('[[subscription]]\nprovider = "cursor"\nprice = 60\n');
+    const res = await call(app, "GET", "/api/subscriptions/config");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { path: string; entries: SubscriptionEntry[] };
+    expect(body.entries).toEqual([{ provider: "cursor", price: 60 }]);
+    expect(body.path).toBe(subscriptionsFile);
+  });
+
+  test("surfaces a broken file from /api/subscriptions/config with the parse error", async () => {
+    const app = appWith("[[subscription]]\nnope\n");
+    const res = await call(app, "GET", "/api/subscriptions/config");
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toMatch(/subscriptions/);
+  });
 });

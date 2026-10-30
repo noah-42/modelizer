@@ -349,6 +349,17 @@ export function buildApi(deps: ProviderRouteDeps & {
     }
   });
 
+  /** The saved overrides only — what the manage tab edits, without merged provider facts. */
+  app.get("/api/subscriptions/config", (c) => {
+    const path = subscriptionsPath();
+    try {
+      return c.json({ path, entries: loadSubscriptions(path) });
+    } catch (err) {
+      const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
+      return c.json({ error: message }, 422);
+    }
+  });
+
   app.get("/api/subscriptions", (c) => {
     const view = readSubscriptions(db, subscriptionsPath(), now());
     const generatedAt = now().toISOString();

@@ -1,19 +1,33 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   addModel,
+  addSubscription,
+  deleteSubscription,
   fetchAudit,
   fetchDiary,
+  fetchManageProviders,
   fetchModels,
   fetchOverview,
   fetchSessions,
   fetchSubscriptions,
+  fetchSubscriptionConfig,
   removeModel,
+  removeProvider,
+  removeToken,
   reorderModels,
+  reorderProviders,
+  reorderSubscriptions,
+  setClaudeOAuthUsage,
+  setProviderEnabled,
+  setToken,
+  updateSubscription,
   type AuditEventRow,
   type DiaryDay,
   type LlmModel,
+  type ManageProvider,
   type Overview,
   type OverviewProvider,
+  type SavedSubscription,
   type SessionInfo,
   type SessionsResponse,
   type Subscription,
@@ -66,7 +80,7 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-type Tab = "dashboard" | "subscriptions" | "models" | "audit" | "diary";
+type Tab = "dashboard" | "subscriptions" | "manage" | "models" | "audit" | "diary";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -76,7 +90,7 @@ export function App() {
         <h1>modelizer</h1>
       </header>
       <nav className="tabs">
-        {(["dashboard", "subscriptions", "models", "audit", "diary"] as const).map((t) => (
+        {(["dashboard", "subscriptions", "manage", "models", "audit", "diary"] as const).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
@@ -84,6 +98,7 @@ export function App() {
       </nav>
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
+      {tab === "manage" && <ManageView />}
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
@@ -365,6 +380,402 @@ function DiaryView() {
  * The model catalogue, and the way it grows: paste an OpenRouter link, the server reads the model's
  * own metadata and records the entry. The page shows what is known and where each row came from.
  */
+/** The authHealth badge wording: health of the login, never the quota. */
+const HEALTH_LABELS: Record<string, string> = {
+  "no-token": "no token",
+  rejected: "token rejected",
+  quota: "quota",
+  ok: "ok",
+  unknown: "not polled yet",
+};
+
+/**
+ * The manage tab: subscription overrides and provider integrations. Pure white regardless of
+ * the dashboard's theme — the styling contract is scoped to `.manage-view` in styles.css.
+ * Tokens are write-only here: the API never returns a value, and the inputs never prefill.
+ */
+function ManageView() {
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [entries, setEntries] = useState<SavedSubscription[] | null>(null);
+  const [providers, setProviders] = useState<ManageProvider[] | null>(null);
+
+  // Add-subscription form (provider is required before any request is sent).
+  const [newProvider, setNewProvider] = useState("");
+  const [newPlan, setNewPlan] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newCurrency, setNewCurrency] = useState("USD");
+  const [newPeriod, setNewPeriod] = useState<"monthly" | "annual">("monthly");
+  const [newRenewsDay, setNewRenewsDay] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  // Per-row edit form: one provider edited at a time; empty means "clear this field".
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<{ plan: string; price: string; currency: string; renewsDay: string }>({
+    plan: "", price: "", currency: "", renewsDay: "",
+  });
+
+  // Two-click removal, per section, like ModelsView.
+  const [armedSub, setArmedSub] = useState<string | null>(null);
+  const [armedProvider, setArmedProvider] = useState<string | null>(null);
+
+  // Token form: one provider credential at a time; the value lives only in this input.
+  const [tokenForm, setTokenForm] = useState<{ id: string; name: string } | null>(null);
+  const [tokenValue, setTokenValue] = useState("");
+
+  const load = async () => {
+    try {
+      const [config, manage] = await Promise.all([fetchSubscriptionConfig(), fetchManageProviders()]);
+      setEntries(config.entries);
+      setProviders(manage.providers);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const run = async (action: () => Promise<void>, done: string) => {
+    setError(null);
+    setStatus(null);
+    try {
+      await action();
+      setStatus(done);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const addSubscriptionRow = async () => {
+    if (newProvider.trim() === "" || adding) return;
+    setAdding(true);
+    await run(async () => {
+      await addSubscription({
+        provider: newProvider.trim(),
+        ...(newPlan.trim() === "" ? {} : { plan: newPlan.trim() }),
+        ...(newPrice.trim() === "" ? {} : { price: Number(newPrice) }),
+        ...(newCurrency.trim() === "" ? {} : { currency: newCurrency.trim().toUpperCase() }),
+        period: newPeriod,
+        ...(newRenewsDay.trim() === "" ? {} : { renewsDay: Number(newRenewsDay) }),
+      });
+      setNewProvider("");
+      setNewPlan("");
+      setNewPrice("");
+      setNewCurrency("USD");
+      setNewPeriod("monthly");
+      setNewRenewsDay("");
+    }, `${newProvider.trim()} saved`);
+    setAdding(false);
+  };
+
+  const beginEdit = (entry: SavedSubscription) => {
+    setEditing(entry.provider);
+    setEditDraft({
+      plan: entry.plan ?? "",
+      price: entry.price === undefined ? "" : String(entry.price),
+      currency: entry.currency ?? "",
+      renewsDay: entry.renewsDay === undefined ? "" : String(entry.renewsDay),
+    });
+  };
+
+  const saveEdit = async (provider: string) => {
+    await run(async () => {
+      // Empty input means "clear the saved field": the API takes null as an explicit clear.
+      await updateSubscription(provider, {
+        ...(editDraft.plan === "" ? { plan: null } : { plan: editDraft.plan }),
+        ...(editDraft.price === "" ? { price: null } : { price: Number(editDraft.price) }),
+        ...(editDraft.currency === "" ? { currency: null } : { currency: editDraft.currency.toUpperCase() }),
+        ...(editDraft.renewsDay === "" ? { renewsDay: null } : { renewsDay: Number(editDraft.renewsDay) }),
+      } as Partial<SavedSubscription>);
+      setEditing(null);
+    }, `${provider} updated`);
+  };
+
+  const removeSub = async (provider: string) => {
+    if (armedSub !== provider) {
+      setArmedSub(provider);
+      return;
+    }
+    await run(async () => {
+      await deleteSubscription(provider);
+      setArmedSub(null);
+    }, `${provider} override removed (detected plans keep showing)`);
+  };
+
+  const moveSub = (from: number, step: -1 | 1) => {
+    const list = entries ?? [];
+    const to = from + step;
+    if (to < 0 || to >= list.length) return;
+    const ids = list.map((e) => e.provider);
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    void run(() => reorderSubscriptions(ids), "subscription order saved");
+  };
+
+  const toggleProvider = (id: string, enabled: boolean) =>
+    void run(() => setProviderEnabled(id, enabled), `${id} ${enabled ? "enabled" : "disabled"} — applies without restart`);
+
+  const removeProv = (id: string) => {
+    if (armedProvider !== id) {
+      setArmedProvider(id);
+      return;
+    }
+    void run(async () => {
+      await removeProvider(id);
+      setArmedProvider(null);
+    }, `${id} removed — subscriptions, history and tokens kept`);
+  };
+
+  const moveProvider = (from: number, step: -1 | 1) => {
+    const list = providers ?? [];
+    const to = from + step;
+    if (to < 0 || to >= list.length) return;
+    const ids = list.map((p) => p.id);
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    void run(() => reorderProviders(ids), "provider order saved");
+  };
+
+  const submitToken = async () => {
+    if (tokenForm === null || tokenValue === "") return;
+    await run(async () => {
+      await setToken(tokenForm.id, tokenForm.name, tokenValue);
+      setTokenForm(null);
+      setTokenValue("");
+    }, `${tokenForm.name} stored in the Keychain`);
+  };
+
+  const dropToken = (id: string, name: string) =>
+    void run(() => removeToken(id, name), `${name} removed from the Keychain`);
+
+  return (
+    <div className="manage-view">
+      <div className="head-line">
+        <span className="muted">saved billing entries and provider integrations · changes apply live</span>
+      </div>
+      {error && <div className="banner error manage-banner">{error}</div>}
+      {status && <div className="banner manage-banner">{status}</div>}
+
+      <section className="card manage-section">
+        <h2>Subscriptions</h2>
+        <p className="manage-hint">Your saved billing entries. Deleting removes only the saved note — a plan the provider reports keeps showing on the Subscriptions page.</p>
+        <div className="manage-add">
+          <input
+            className="manage-input"
+            type="text"
+            placeholder="provider (required)"
+            value={newProvider}
+            onChange={(e) => setNewProvider(e.target.value)}
+            aria-label="provider id"
+          />
+          <input
+            className="manage-input"
+            type="text"
+            placeholder="plan"
+            value={newPlan}
+            onChange={(e) => setNewPlan(e.target.value)}
+            aria-label="plan name"
+          />
+          <input
+            className="manage-input manage-price"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="price"
+            value={newPrice}
+            onChange={(e) => setNewPrice(e.target.value)}
+            aria-label="price per period"
+          />
+          <input
+            className="manage-input manage-currency"
+            type="text"
+            maxLength={3}
+            placeholder="USD"
+            value={newCurrency}
+            onChange={(e) => setNewCurrency(e.target.value)}
+            aria-label="currency code"
+          />
+          <select
+            className="manage-input"
+            value={newPeriod}
+            onChange={(e) => setNewPeriod(e.target.value as "monthly" | "annual")}
+            aria-label="billing period"
+          >
+            <option value="monthly">monthly</option>
+            <option value="annual">annual</option>
+          </select>
+          <input
+            className="manage-input manage-day"
+            type="number"
+            min="1"
+            max="31"
+            placeholder="day"
+            value={newRenewsDay}
+            onChange={(e) => setNewRenewsDay(e.target.value)}
+            aria-label="renewal day of month"
+          />
+          <button className="add-btn" onClick={() => void addSubscriptionRow()} disabled={adding || newProvider.trim() === ""}>
+            {adding ? "saving…" : "add"}
+          </button>
+        </div>
+        <div className="manage-list">
+          {(entries ?? []).map((entry, i) => (
+            <div key={entry.provider} className="manage-row">
+              {editing === entry.provider ? (
+                <>
+                  <strong className="manage-name">{providerName(entry.provider)}</strong>
+                  <input
+                    className="manage-input"
+                    type="text"
+                    placeholder="plan"
+                    value={editDraft.plan}
+                    onChange={(e) => setEditDraft({ ...editDraft, plan: e.target.value })}
+                    aria-label={`plan for ${entry.provider}`}
+                  />
+                  <input
+                    className="manage-input manage-price"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="price"
+                    value={editDraft.price}
+                    onChange={(e) => setEditDraft({ ...editDraft, price: e.target.value })}
+                    aria-label={`price for ${entry.provider}`}
+                  />
+                  <input
+                    className="manage-input manage-currency"
+                    type="text"
+                    maxLength={3}
+                    placeholder="currency"
+                    value={editDraft.currency}
+                    onChange={(e) => setEditDraft({ ...editDraft, currency: e.target.value })}
+                    aria-label={`currency for ${entry.provider}`}
+                  />
+                  <input
+                    className="manage-input manage-day"
+                    type="number"
+                    min="1"
+                    max="31"
+                    placeholder="day"
+                    value={editDraft.renewsDay}
+                    onChange={(e) => setEditDraft({ ...editDraft, renewsDay: e.target.value })}
+                    aria-label={`renewal day for ${entry.provider}`}
+                  />
+                  <button className="add-btn" onClick={() => void saveEdit(entry.provider)}>save</button>
+                  <button className="manage-small" onClick={() => setEditing(null)}>cancel</button>
+                </>
+              ) : (
+                <>
+                  <strong className="manage-name">{providerName(entry.provider)}</strong>
+                  <span className="muted">
+                    {[entry.plan, entry.price === undefined ? null : `${entry.price} ${(entry.currency ?? "USD").toUpperCase()}/${entry.period ?? "monthly"}`, entry.renewsDay === undefined ? null : `day ${entry.renewsDay}`]
+                      .filter((v) => v !== null && v !== undefined)
+                      .join(" · ") || "no details saved"}
+                  </span>
+                  <span className="manage-actions">
+                    <button className="manage-small" onClick={() => moveSub(i, -1)} disabled={i === 0} aria-label={`move ${entry.provider} up`}>↑</button>
+                    <button className="manage-small" onClick={() => moveSub(i, 1)} disabled={i === (entries?.length ?? 0) - 1} aria-label={`move ${entry.provider} down`}>↓</button>
+                    <button className="manage-small" onClick={() => beginEdit(entry)}>edit</button>
+                    <button className="manage-small manage-danger" onClick={() => void removeSub(entry.provider)}>
+                      {armedSub === entry.provider ? "confirm remove" : "remove"}
+                    </button>
+                  </span>
+                </>
+              )}
+            </div>
+          ))}
+          {entries !== null && entries.length === 0 && <div className="banner">No saved entries — add one above.</div>}
+        </div>
+      </section>
+
+      <section className="card manage-section">
+        <h2>Providers</h2>
+        <p className="manage-hint">Built-in integrations. Removing one keeps its subscriptions, history, models and tokens; changes apply without restarting.</p>
+        <div className="manage-list">
+          {(providers ?? []).map((p, i) => (
+            <div key={p.id} className="manage-row manage-provider">
+              <div className="manage-provider-head">
+                <strong className="manage-name">{providerName(p.id)}</strong>
+                <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
+                <span className="manage-auth">{p.authMethod}</span>
+                <label className="manage-toggle">
+                  <input
+                    type="checkbox"
+                    checked={p.enabled}
+                    onChange={(e) => toggleProvider(p.id, e.target.checked)}
+                    aria-label={`enable ${p.id}`}
+                  />
+                  enabled
+                </label>
+                <span className="manage-actions">
+                  <button className="manage-small" onClick={() => moveProvider(i, -1)} disabled={i === 0} aria-label={`move ${p.id} up`}>↑</button>
+                  <button className="manage-small" onClick={() => moveProvider(i, 1)} disabled={i === (providers?.length ?? 0) - 1} aria-label={`move ${p.id} down`}>↓</button>
+                  <button className="manage-small manage-danger" onClick={() => removeProv(p.id)}>
+                    {armedProvider === p.id ? "confirm remove" : "remove"}
+                  </button>
+                </span>
+              </div>
+              {p.oauthUsageEnabled !== undefined && (
+                <label className="manage-toggle manage-oauth">
+                  <input
+                    type="checkbox"
+                    checked={p.oauthUsageEnabled}
+                    onChange={(e) => void run(() => setClaudeOAuthUsage(e.target.checked), "Claude OAuth preference updated")}
+                    aria-label="use Claude account-wide OAuth"
+                  />
+                  account-wide OAuth usage (opt-in, process-local)
+                </label>
+              )}
+              {p.missingCredentials.length > 0 && (
+                <span className="manage-missing">missing: {p.missingCredentials.join(", ")}</span>
+              )}
+              {Object.entries(p.tokens).map(([name, token]) => (
+                <div key={name} className="manage-token-row">
+                  <code>{name}</code>
+                  <span className="muted">
+                    {token.source === "env"
+                      ? "set by environment (read-only)"
+                      : token.source === "keychain"
+                        ? token.shadowed
+                          ? "in Keychain — shadowed by environment"
+                          : "in Keychain"
+                        : "not set"}
+                  </span>
+                  {tokenForm?.id === p.id && tokenForm.name === name ? (
+                    <span className="manage-token-form">
+                      <input
+                        type="password"
+                        className="manage-input"
+                        placeholder="paste value — never shown again"
+                        value={tokenValue}
+                        onChange={(e) => setTokenValue(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && void submitToken()}
+                        aria-label={`value for ${name}`}
+                      />
+                      <button className="add-btn" onClick={() => void submitToken()} disabled={tokenValue === ""}>store</button>
+                      <button className="manage-small" onClick={() => { setTokenForm(null); setTokenValue(""); }}>cancel</button>
+                    </span>
+                  ) : (
+                    <span className="manage-actions">
+                      <button className="manage-small" onClick={() => { setTokenForm({ id: p.id, name }); setTokenValue(""); }}>
+                        {token.source === "absent" ? "add" : "replace"}
+                      </button>
+                      {token.source === "keychain" && !token.shadowed && (
+                        <button className="manage-small manage-danger" onClick={() => dropToken(p.id, name)}>remove</button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ModelsView() {
   const [models, setModels] = useState<LlmModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
