@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApi } from "./api";
 import { zaiAdapter } from "./adapters/zai";
+import { claudeAdapter } from "./adapters/claude";
+import { authJsonPath } from "./adapters/codex";
+import type { ProviderAuth } from "./provider-auth";
 import { loadConfig } from "./config";
 import { openDb } from "./db";
 import { Scheduler } from "./scheduler";
@@ -14,13 +17,15 @@ const SUBMITTED = "test-only-submitted-credential";
 const REPLACEMENT = "test-only-replacement-credential";
 const ENV_TOKEN = "test-only-environment-credential";
 const TOKEN_PATH = "/api/providers/zai/tokens/ZAI_API_KEY";
+const OAUTH_PATH = "/api/providers/claude/oauth-usage";
+const APP_TOKEN = "test-only-app-owned-credential";
 const cleanups: Array<() => void> = [];
 const noProviderFetch: typeof fetch = Object.assign(
   async (): Promise<Response> => { throw new TypeError("Provider calls are forbidden in management tests"); },
   { preconnect: () => { throw new TypeError("Provider connections are forbidden in management tests"); } },
 );
 
-interface ManagedProvider {
+interface ManagedProvider extends ProviderAuth {
   id: string;
   displayName: string;
   enabled: boolean;
@@ -59,7 +64,14 @@ function appWith(base: Record<string, string | undefined> = {}) {
   cleanups.push(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
   const security = fakeSecurity();
   const secretOptions = { platform: "darwin", run: security.run } as const;
-  const env = resolveEnv(base, secretOptions);
+  const env = resolveEnv({
+    CLAUDE_PROJECTS_DIR: join(root, "claude", "projects"),
+    CODEX_SESSIONS_DIR: join(root, "codex", "sessions"),
+    CURSOR_STATE_DB: join(root, "state.vscdb"),
+    FREELLMAPI_DB: join(root, "freeapi.db"),
+    ...base,
+  }, secretOptions);
+  writeFileSync(join(root, "freeapi.db"), "");
   let changes = 0;
   const app = buildApi({
     db, adapters: [], env: {}, envRef: env, configPath: path, secretOptions,
@@ -92,12 +104,97 @@ function row(data: ManageResponse, id = "zai"): ManagedProvider {
 async function safeBody(response: Response, status = 200): Promise<string> {
   const text = await response.text();
   expect(response.status).toBe(status);
-  for (const token of [SUBMITTED, REPLACEMENT, ENV_TOKEN]) expect(text).not.toContain(token);
+  for (const token of [SUBMITTED, REPLACEMENT, ENV_TOKEN, APP_TOKEN]) expect(text).not.toContain(token);
   expect(text).not.toMatch(/"value"\s*:/);
   return text;
 }
 
 describe("provider management", () => {
+  test("the listing describes every adapter using its actual authentication source", async () => {
+    const h = appWith();
+    const data = await listing(h);
+    expect(Object.fromEntries(data.providers.map((provider) => [provider.id, provider.authMethod]))).toEqual({
+      zai: "api-key", openrouter: "api-key", moonshot: "api-key",
+      claude: "app: Claude Code login", codex: "app: ChatGPT login", cursor: "app: Cursor login",
+      freellmapi: "app: FreeLLMAPI local ledger",
+    });
+    for (const id of ["zai", "openrouter", "moonshot"]) {
+      expect(row(data, id).appAuthPresent).toBeUndefined();
+      expect(row(data, id).oauthUsageEnabled).toBeUndefined();
+    }
+    expect(row(data, "claude").oauthUsageEnabled).toBe(false);
+  });
+
+  test("absent app sources report no token even when historical polls succeeded", async () => {
+    const h = appWith();
+    mkdirSync(join(h.root, "codex", "sessions"), { recursive: true });
+    for (const id of ["claude", "codex", "cursor"]) h.db.updateAdapterState(id, { ok: true, at: AT });
+    const data = await listing(h);
+    for (const id of ["claude", "codex", "cursor"]) {
+      expect(row(data, id).appAuthPresent).toBe(false);
+      expect(row(data, id).authHealth).toBe("no-token");
+    }
+  });
+
+  test("app presence checks expose only booleans and preserve app owned credential files", async () => {
+    const h = appWith();
+    mkdirSync(join(h.root, "claude", "projects"), { recursive: true });
+    mkdirSync(join(h.root, "codex", "sessions"), { recursive: true });
+    const authPath = authJsonPath(h.env);
+    const statePath = join(h.root, "state.vscdb");
+    // Opaque contents prove listing needs existence, not parsing or opening app credentials.
+    for (const path of [authPath, statePath]) writeFileSync(path, APP_TOKEN);
+    h.security.store.set("ANTHROPIC_ADMIN_API_KEY", APP_TOKEN);
+    refreshCredentials(h.env, h.secretOptions);
+    for (const id of ["claude", "codex", "cursor"]) h.db.updateAdapterState(id, { ok: true, at: AT });
+    const data: ManageResponse = JSON.parse(await safeBody(await h.app.request("/api/providers/manage")));
+    for (const id of ["claude", "codex", "cursor", "freellmapi"]) expect(row(data, id).appAuthPresent).toBe(true);
+    for (const id of ["claude", "codex", "cursor"]) expect(row(data, id).authHealth).toBe("ok");
+    for (const path of [authPath, statePath]) expect(readFileSync(path, "utf8")).toBe(APP_TOKEN);
+    expect(h.security.commands.every((command) => command === "find-generic-password")).toBe(true);
+  });
+
+  test.each([true, false])("setting Claude OAuth usage to %s changes only the shared process flag", async (enabled) => {
+    const h = appWith({ CLAUDE_OAUTH_USAGE: enabled ? "0" : "1", CLAUDE_OAUTH_TOKEN: APP_TOKEN });
+    mkdirSync(join(h.root, "claude", "projects"), { recursive: true });
+    const originalEnv = { ...h.env };
+    const originalConfig = readFileSync(h.path, "utf8");
+    const originalDb = h.db.raw.serialize();
+    const commands = [...h.security.commands];
+    const seen: Array<string | undefined> = [];
+    const adapter = { ...claudeAdapter, collect: async (ctx: Parameters<typeof claudeAdapter.collect>[0]) => {
+      seen.push(ctx.env.CLAUDE_OAUTH_USAGE);
+      return [];
+    }, normalize: () => [] };
+    const scheduler = new Scheduler({ db: h.db, adapters: [adapter], env: h.env, clock: () => new Date(AT) });
+
+    const response = await safeBody(await h.app.request(OAUTH_PATH, writeRequest("PUT", { enabled })));
+
+    expect(JSON.parse(response)).toEqual({ id: "claude", oauthUsageEnabled: enabled });
+    expect(h.env).toEqual({ ...originalEnv, CLAUDE_OAUTH_USAGE: enabled ? "1" : "0" });
+    expect(readFileSync(h.path, "utf8")).toBe(originalConfig);
+    expect(h.db.raw.serialize()).toEqual(originalDb);
+    expect(h.security.commands).toEqual(commands);
+    expect(h.security.store.size).toBe(0);
+    expect(h.changes()).toBe(0);
+    await scheduler.runProvider("claude");
+    expect(seen).toEqual([enabled ? "1" : "0"]);
+    expect(row(await listing(h), "claude").oauthUsageEnabled).toBe(enabled);
+    refreshCredentials(h.env, h.secretOptions);
+    expect(h.env.CLAUDE_OAUTH_USAGE).toBe(enabled ? "1" : "0");
+  });
+
+  test("invalid Claude OAuth usage input leaves the process flag untouched", async () => {
+    const h = appWith({ CLAUDE_OAUTH_USAGE: "1" });
+    const commands = [...h.security.commands];
+    for (const body of [{ enabled: "yes" }, {}, null]) {
+      await safeBody(await h.app.request(OAUTH_PATH, writeRequest("PUT", body)), 400);
+    }
+    await safeBody(await h.app.request(OAUTH_PATH, { method: "PUT", body: "{" }), 400);
+    expect(h.env.CLAUDE_OAUTH_USAGE).toBe("1");
+    expect(h.security.commands).toEqual(commands);
+  });
+
   test("the listing exposes only credential status for every managed secret", async () => {
     const h = appWith({ ZAI_API_KEY: ENV_TOKEN });
     const text = await safeBody(await h.app.request("/api/providers/manage"));

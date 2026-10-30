@@ -3,6 +3,7 @@ import { ADAPTERS, ADAPTERS_BY_ID } from "./adapters";
 import type { Adapter } from "./adapters/types";
 import { loadConfig, setProviderEnabled, setProviderOrder } from "./config";
 import type { AdapterStateRow, Db } from "./db";
+import { providerAuth } from "./provider-auth";
 import {
   credentialStatus, KeychainError, refreshCredentials, removeSecret, SECRET_NAMES, writeSecret,
   type SecretName, type SecretOptions,
@@ -57,17 +58,28 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       const providers = ids.flatMap((id, index) => {
         const adapter = ADAPTERS_BY_ID.get(id);
         if (!adapter) return [];
+        const auth = providerAuth(adapter, env);
         return [{
           id, displayName: DISPLAY_NAMES[id] ?? id, enabled: config.providers[id]?.enabled === true,
           order: index + 1, missingCredentials: adapter.missingCredentials(env),
           tokens: Object.fromEntries((PROVIDER_SECRETS[id] ?? []).map((name) => [name, credentialStatus(env, name)])),
-          authHealth: authHealth(adapter, env, deps.db.getAdapterState(id), now()),
+          ...auth,
+          authHealth: auth.appAuthPresent === false ? "no-token" : authHealth(adapter, env, deps.db.getAdapterState(id), now()),
         }];
       });
       return c.json({ providers, tokens });
     } catch {
       return c.json({ error: "Could not read provider configuration" }, 422);
     }
+  });
+
+  app.put("/api/providers/claude/oauth-usage", async (c) => {
+    const body: unknown = await c.req.json().catch(() => null);
+    if (!isObject(body) || typeof body.enabled !== "boolean")
+      return c.json({ error: "enabled must be a boolean" }, 400);
+    // The scheduler shares this process-local snapshot; no credential refresh or config write is needed.
+    env.CLAUDE_OAUTH_USAGE = body.enabled ? "1" : "0";
+    return c.json({ id: "claude", oauthUsageEnabled: body.enabled });
   });
 
   app.put("/api/providers/order", async (c) => {
