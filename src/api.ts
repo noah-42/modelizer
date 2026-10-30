@@ -353,7 +353,14 @@ export function buildApi(deps: ProviderRouteDeps & {
   app.get("/api/subscriptions/config", (c) => {
     const path = subscriptionsPath();
     try {
-      return c.json({ path, entries: loadSubscriptions(path) });
+      const entries = loadSubscriptions(path);
+      // The saved order is the display order: ranked blocks first, unranked after in file order
+      // (stable sort), matching how SubscriptionCatalog.list() sequences the merged page.
+      const ordered = entries
+        .map((entry, index) => ({ entry, index }))
+        .sort((a, b) => (a.entry.order ?? Number.MAX_SAFE_INTEGER) - (b.entry.order ?? Number.MAX_SAFE_INTEGER) || a.index - b.index)
+        .map(({ entry }) => entry);
+      return c.json({ path, entries: ordered });
     } catch (err) {
       const message = err instanceof SubscriptionConfigError ? err.message : `subscriptions: ${(err as Error).message}`;
       return c.json({ error: message }, 422);

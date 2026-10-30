@@ -866,4 +866,7 @@ code {
   .manage-input {
     flex: 1 1 120px;
   }
+  .manage-view .add-btn {
+    min-height: 44px;
+  }
 }

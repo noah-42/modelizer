@@ -232,4 +232,14 @@ describe("subscription route errors", () => {
     expect(res.status).toBe(422);
     expect(((await res.json()) as { error: string }).error).toMatch(/subscriptions/);
   });
+
+  test("orders /api/subscriptions/config by the saved rank, unranked last in file order", async () => {
+    const app = appWith(
+      '[[subscription]]\nprovider = "cursor"\norder = 2\n\n[[subscription]]\nprovider = "zai"\norder = 1\n\n[[subscription]]\nprovider = "claude"\n',
+    );
+    const res = await call(app, "GET", "/api/subscriptions/config");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: SubscriptionEntry[] };
+    expect(body.entries.map((entry) => entry.provider)).toEqual(["zai", "cursor", "claude"]);
+  });
 });
