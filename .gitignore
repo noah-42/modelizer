@@ -9,3 +9,5 @@ web/dist/
 *.log
 .DS_Store
 models.toml
+
+graphify-out/

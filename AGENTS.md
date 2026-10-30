@@ -115,3 +115,13 @@ git worktree add ../modelizer-<task> -b <branch> origin/main
 ```
 
 When the task branch is ready, from the clean main checkout: `git merge --ff-only <branch>`, then `git push`. If it is not a fast-forward, rebase the task branch onto `origin/main` first. No merge commits.
+
+## CODE GRAPH (graphify)
+`graphify-out/graph.json` maps this repo; it is also part of the cross-repo graph at
+`~/.graphify/global-graph.json`.
+- `graphify explain "<symbol>"` / `graphify path "A" "B"` for structural questions;
+  add `--graph ~/.graphify/global-graph.json` to cross repos.
+- Model artifacts and run results are runtime state — read them from disk or the
+  database, not from the graph.
+- `graphify update .` after large merges. `graphify-out/` is gitignored.
+- Full notes: `~/code/CODE_GRAPH.md`.

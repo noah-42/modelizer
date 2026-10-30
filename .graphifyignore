@@ -1,0 +1,19 @@
+# graphify scope for modelizer.
+node_modules/
+data/
+fixtures/
+graphify-out/
+dist/
+build/
+bun.lock
+*.png
+*.jpg
+*.svg
+*.log
+*.jsonl
+*.sqlite
+.DS_Store
+# live config holds subscription keys; only the .example files are safe
+modelizer.toml
+models.toml
+subscriptions.toml
