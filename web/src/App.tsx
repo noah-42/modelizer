@@ -84,8 +84,24 @@ type Tab = "dashboard" | "subscriptions" | "manage" | "models" | "audit" | "diar
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+  const [skew, setSkew] = useState<string | null>(null);
+
+  // A server older than this page lacks /api/version (or answers it with HTML): say so
+  // up front instead of letting every page fail cryptically.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/version");
+        if (!(res.headers.get("content-type") ?? "").includes("json")) throw new Error("html");
+      } catch {
+        setSkew("The modelizer server is older than this page — restart it to load the new API.");
+      }
+    })();
+  }, []);
+
   return (
     <div className="page">
+      {skew && <div className="banner error">{skew}</div>}
       <header className="header">
         <img className="header-logo" src="/modelizer-icon.svg" alt="" width={26} height={26} />
         <h1>modelizer</h1>

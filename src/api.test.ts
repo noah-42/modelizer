@@ -243,3 +243,30 @@ describe("subscription route errors", () => {
     expect(body.entries.map((entry) => entry.provider)).toEqual(["zai", "cursor", "claude"]);
   });
 });
+
+describe("API hardening", () => {
+  test("unknown /api/* routes answer JSON 404, never the SPA fallback", async () => {
+    const app = appWith("");
+    const res = await call(app, "GET", "/api/nonexistent");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("json");
+    expect(((await res.json()) as { error: string }).error).toContain("no such API route");
+  });
+
+  test("every JSON API response is tagged application/json so the UI can detect an old server", async () => {
+    const app = appWith("");
+    for (const path of ["/api/version", "/api/overview", "/api/subscriptions"]) {
+      const res = await call(app, "GET", path);
+      expect(res.headers.get("content-type")).toContain("json");
+    }
+  });
+
+  test("/api/version answers the build routes the UI skews against", async () => {
+    const app = appWith("");
+    const res = await call(app, "GET", "/api/version");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { server: string; routes: string[] };
+    expect(body.server).toBe("modelizer");
+    expect(body.routes).toContain("subscriptions-config");
+  });
+});

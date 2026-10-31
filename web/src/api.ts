@@ -189,6 +189,18 @@ export interface ModelsResponse {
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
+  return assertJson<T>(res);
+}
+
+/**
+ * A server older than this page answers API calls with the SPA's index.html; parsing that as
+ * JSON is what produced "Unexpected token '<'". Fail with the fix, not the symptom.
+ */
+async function assertJson<T>(res: Response): Promise<T> {
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("json")) {
+    throw new Error("The server is older than this page — restart modelizer to load the new API.");
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()) as T;
 }
@@ -210,6 +222,9 @@ export function fetchDiary(days = 14): Promise<{ days: DiaryDay[] }> {
 /** A broken subscriptions.toml comes back as 422 *with* a readable error, so keep the body. */
 export async function fetchModels(): Promise<ModelsResponse> {
   const res = await fetch("/api/models");
+  if (!(res.headers.get("content-type") ?? "").includes("json")) {
+    throw new Error("The server is older than this page — restart modelizer to load the new API.");
+  }
   const body = (await res.json()) as ModelsResponse;
   if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
   return body;
@@ -251,6 +266,9 @@ export async function reorderModels(ids: string[]): Promise<void> {
 
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
   const res = await fetch("/api/subscriptions");
+  if (!(res.headers.get("content-type") ?? "").includes("json")) {
+    throw new Error("The server is older than this page — restart modelizer to load the new API.");
+  }
   const body = (await res.json()) as SubscriptionsResponse;
   if (!res.ok && body.error === null) throw new Error(`HTTP ${res.status}`);
   return body;

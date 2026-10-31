@@ -472,6 +472,22 @@ export function buildApi(deps: ProviderRouteDeps & {
     }
   });
 
+  /** The UI compares this against its own build to warn about a server older than the page. */
+  app.get("/api/version", (c) =>
+    c.json({
+      server: "modelizer",
+      startedAt: now().toISOString(),
+      routes: ["overview", "subscriptions-config", "changes", "providers-manage", "version"],
+    }),
+  );
+
+  /**
+   * Unknown API paths answer JSON, never the SPA fallback: a server older than the page
+   * must produce a readable "restart" error in the UI, not an HTML blob the fetch helper
+   * chokes on.
+   */
+  app.all("/api/*", (c) => c.json({ error: "no such API route" }, 404));
+
   app.use("*", serveStatic({ root: "./web/dist" }));
   app.get("*", serveStatic({ path: "./web/dist/index.html" }));
 
