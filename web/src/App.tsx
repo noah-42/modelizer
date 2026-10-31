@@ -81,11 +81,35 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-type Tab = "dashboard" | "subscriptions" | "manage" | "changes" | "models" | "audit" | "diary";
+const TABS = ["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary"] as const;
+type Tab = (typeof TABS)[number];
+
+/** Every page owns its URL: /dashboard, /subscriptions, … so a click is a copy-pasteable address. */
+function tabFromPath(): Tab {
+  const seg = window.location.pathname.replace(/^\/+|\/+$/g, "");
+  return (TABS as readonly string[]).includes(seg) ? (seg as Tab) : "dashboard";
+}
 
 export function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [tab, setTabState] = useState<Tab>(tabFromPath);
   const [skew, setSkew] = useState<string | null>(null);
+
+  const setTab = (t: Tab) => {
+    setTabState(t);
+    const path = t === "dashboard" ? "/dashboard" : `/${t}`;
+    if (window.location.pathname !== path) window.history.pushState({ tab: t }, "", path);
+  };
+
+  // Back/forward follows the tabs; a bare "/" is canonicalized to /dashboard.
+  useEffect(() => {
+    const onPop = () => setTabState(tabFromPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    const path = tab === "dashboard" ? "/dashboard" : `/${tab}`;
+    if (window.location.pathname !== path) window.history.replaceState({ tab }, "", path);
+  }, [tab]);
 
   // A server older than this page lacks /api/version (or answers it with HTML): say so
   // up front instead of letting every page fail cryptically.
@@ -111,7 +135,7 @@ export function App() {
         </a>
       </header>
       <nav className="tabs">
-        {(["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary"] as const).map((t) => (
+        {TABS.map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
@@ -119,8 +143,7 @@ export function App() {
       </nav>
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
-      {tab === "manage" && <ManageView goSubscriptions={() => setTab("subscriptions")} />}
-      {tab === "changes" && <ChangesView />}
+      {tab === "manage" && <ManageView goSubscriptions={() => setTab("subscriptions")} />}      {tab === "changes" && <ChangesView />}
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
@@ -508,13 +531,13 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
         <div className="manage-list">
           {(providers ?? []).map((p, i) => (
             <div key={p.id} className="manage-row manage-provider">
-              <div className="manage-provider-head">
-                <span className="manage-name manage-provider-name">
-                  <ProviderIcon id={p.id} />
-                  {providerName(p.id)}
-                </span>
+              <div className="manage-provider-title">
+                <ProviderIcon id={p.id} />
+                <span className="manage-provider-name">{providerName(p.id)}</span>
                 <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
                 <span className="manage-auth">{p.authMethod}</span>
+              </div>
+              <div className="manage-line">
                 <label className="manage-toggle">
                   <input
                     type="checkbox"
@@ -547,16 +570,18 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                 <span className="manage-missing">missing: {p.missingCredentials.join(", ")}</span>
               )}
               {Object.entries(p.tokens).map(([name, token]) => (
-                <div key={name} className="manage-token-row">
-                  <code>{name}</code>
-                  <span className="muted">
-                    {token.source === "env"
-                      ? "set by environment (read-only)"
-                      : token.source === "keychain"
-                        ? token.shadowed
-                          ? "in Keychain — shadowed by environment"
-                          : "in Keychain"
-                        : "not set"}
+                <div key={name} className="manage-line manage-token-row">
+                  <span className="manage-token-label">
+                    <code>{name}</code>
+                    <span className="muted">
+                      {token.source === "env"
+                        ? "set by environment (read-only)"
+                        : token.source === "keychain"
+                          ? token.shadowed
+                            ? "in Keychain — shadowed by environment"
+                            : "in Keychain"
+                          : "not set"}
+                    </span>
                   </span>
                   {tokenForm?.id === p.id && tokenForm.name === name ? (
                     <span className="manage-token-form">
