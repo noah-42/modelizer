@@ -67,6 +67,12 @@ tests for it running against a fixture server AND the live server.
 - [ ] 7. Docs + registration: README page-relationship table, AGENTS.md conventions (change
       events, SWR rule), this INDEX entry moved to archived on completion.
 
+- [x] 8. Keychain isolation (incident follow-up): a QA pass exercised the token-remove flow
+      against the real login keychain and deleted the user's ZAI_API_KEY (2026-10-31 ~00:45).
+      Fix: `MODELIZER_KEYCHAIN_FILE` / `SecretOptions.keychainFile` routes all `security` CLI
+      calls to a scratch keychain file; test proves writes land there and the login keychain
+      is untouched. AGENTS.md now mandates it for every test/fixture process.
+
 ## Final verification wave
 - F1 plan compliance · F2 code review · F3 Playwright against fixture AND live server
   (read-only) · F4 ideal-state fidelity vs the problem statements above. All must approve.
