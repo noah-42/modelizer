@@ -998,24 +998,26 @@ function usdPerM(rate: number): string {
 
 function SubscriptionsView() {
   const [data, setData] = useState<SubscriptionsResponse | null>(null);
+  const [saved, setSaved] = useState<SavedSubscription[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+
+  const load = async () => {
+    try {
+      const [res, config] = await Promise.all([fetchSubscriptions(), fetchSubscriptionConfig()]);
+      setData(res);
+      setSaved(config.entries);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
-    const load = async () => {
-      try {
-        const res = await fetchSubscriptions();
-        if (alive) {
-          setData(res);
-          setError(null);
-        }
-      } catch (err) {
-        if (alive) setError((err as Error).message);
-      }
-    };
     void load();
-    const timer = setInterval(load, 60_000);
+    const timer = setInterval(() => void load(), 60_000);
     const ticker = setInterval(() => setTick((t) => t + 1), 1000);
     return () => {
       alive = false;
@@ -1029,6 +1031,7 @@ function SubscriptionsView() {
   const excludedRows = rows.filter((s) => !s.counts);
   // Currencies are never added together: one figure per currency.
   const totalLine = data === null ? "" : data.totals.map((t) => money(t.monthly, t.currency)).join(" + ");
+  const savedProviders = new Set((saved ?? []).map((e) => e.provider));
   return (
     <>
       <div className="head-line">
@@ -1061,14 +1064,153 @@ function SubscriptionsView() {
       )}
       <div className="cards">
         {rows.map((s) => (
-          <SubscriptionCard key={s.provider} s={s} tick={tick} />
+          <SubscriptionCard
+            key={s.provider}
+            s={s}
+            tick={tick}
+            editing={editing === s.provider}
+            saved={savedProviders.has(s.provider)}
+            onEdit={() => setEditing(s.provider)}
+            onClose={() => setEditing(null)}
+            onSaved={async (message) => {
+              setEditing(null);
+              await load();
+              setError(null);
+              void message;
+            }}
+            onError={setError}
+          />
         ))}
       </div>
     </>
   );
 }
 
-function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
+/** The edit form on a subscription card: empty text clears the saved field. */
+function SubscriptionEditForm({
+  s,
+  saved,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  s: Subscription;
+  saved: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
+  const [plan, setPlan] = useState(s.plan);
+  const [price, setPrice] = useState(s.price === null ? "" : String(s.price));
+  const [currency, setCurrency] = useState(s.currency);
+  const [renewsDay, setRenewsDay] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const save = async () => {
+    if (working) return;
+    setWorking(true);
+    onError("");
+    try {
+      if (saved) {
+        await updateSubscription(s.provider, {
+          plan: plan === "" ? null : plan,
+          price: price === "" ? null : Number(price),
+          currency: currency === "" ? null : currency.toUpperCase(),
+          ...(renewsDay === "" ? {} : { renewsDay: Number(renewsDay) }),
+        } as Partial<SavedSubscription>);
+      } else {
+        // A provider-detected row: writing creates the override, prefilled from the merge.
+        await addSubscription({
+          provider: s.provider,
+          ...(plan === "" ? {} : { plan }),
+          ...(price === "" ? {} : { price: Number(price) }),
+          ...(currency === "" ? {} : { currency: currency.toUpperCase() }),
+          ...(renewsDay === "" ? {} : { renewsDay: Number(renewsDay) }),
+        });
+      }
+      onSaved();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="sub-edit" aria-label={`edit ${s.provider}`}>
+      <label className="sub-edit-field">
+        <span className="muted">plan</span>
+        <input className="manage-input" type="text" value={plan} onChange={(e) => setPlan(e.target.value)} />
+      </label>
+      <label className="sub-edit-field">
+        <span className="muted">price per period</span>
+        <input
+          className="manage-input manage-price"
+          type="number"
+          min="0"
+          step="0.01"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+        />
+      </label>
+      <label className="sub-edit-field">
+        <span className="muted">currency</span>
+        <input
+          className="manage-input manage-currency"
+          type="text"
+          maxLength={3}
+          value={currency}
+          onChange={(e) => setCurrency(e.target.value)}
+        />
+      </label>
+      <label className="sub-edit-field">
+        <span className="muted">charge day (1–31)</span>
+        <input
+          className="manage-input manage-day"
+          type="number"
+          min="1"
+          max="31"
+          placeholder={s.renewsAt === null ? "—" : ""}
+          value={renewsDay}
+          onChange={(e) => setRenewsDay(e.target.value)}
+        />
+      </label>
+      <div className="sub-edit-actions">
+        <button className="add-btn" onClick={() => void save()} disabled={working}>
+          {working ? "saving…" : saved ? "save" : "save override"}
+        </button>
+        <button className="manage-small" onClick={onClose}>
+          cancel
+        </button>
+      </div>
+      {!saved && (
+        <span className="muted sub-edit-note">
+          this plan is not in subscriptions.toml yet — saving writes the values above as the saved entry
+        </span>
+      )}
+    </div>
+  );
+}
+
+function SubscriptionCard({
+  s,
+  tick,
+  editing,
+  saved,
+  onEdit,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  s: Subscription;
+  tick: number;
+  editing: boolean;
+  saved: boolean;
+  onEdit: () => void;
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
   const seats = s.seats !== null && s.seats > 1 ? ` · ${s.seats} seats` : "";
   const ending = s.endsAt !== null;
   return (
@@ -1080,29 +1222,38 @@ function SubscriptionCard({ s, tick }: { s: Subscription; tick: number }) {
         </h2>
         <div className="badges">
           <span className={`badge ${stateTone(s.state)}`}>{s.state}</span>
+          <button className="manage-small sub-edit-btn" onClick={editing ? onClose : onEdit} aria-label={`edit ${s.provider}`}>
+            {editing ? "close" : "edit"}
+          </button>
         </div>
       </div>
-      <div className="sub-plan">
-        {s.plan}
-        <span className="muted">
-          {s.period === "annual" ? " · billed yearly" : " · billed monthly"}
-          {seats}
-        </span>
-      </div>
-      <div className="sub-line">
-        <span className="muted">monthly cost</span>
-        <span>{monthlyCost(s)}</span>
-      </div>
-      <div className="sub-line">
-        <span className="muted">{ending ? "ends" : "next charge"}</span>
-        <span>{chargeLine(s, tick)}</span>
-      </div>
-      <div className="sub-line">
-        <span className="muted">source</span>
-        <span className={s.configured ? "muted" : "warn-text"}>
-          {s.configured ? s.source : `${s.source} · not in subscriptions.toml`}
-        </span>
-      </div>
+      {editing ? (
+        <SubscriptionEditForm s={s} saved={saved} onClose={onClose} onSaved={onSaved} onError={onError} />
+      ) : (
+        <>
+          <div className="sub-plan">
+            {s.plan}
+            <span className="muted">
+              {s.period === "annual" ? " · billed yearly" : " · billed monthly"}
+              {seats}
+            </span>
+          </div>
+          <div className="sub-line">
+            <span className="muted">monthly cost</span>
+            <span>{monthlyCost(s)}</span>
+          </div>
+          <div className="sub-line">
+            <span className="muted">{ending ? "ends" : "next charge"}</span>
+            <span>{chargeLine(s, tick)}</span>
+          </div>
+          <div className="sub-line">
+            <span className="muted">source</span>
+            <span className={s.configured ? "muted" : "warn-text"}>
+              {s.configured ? s.source : `${s.source} · not in subscriptions.toml`}
+            </span>
+          </div>
+        </>
+      )}
     </section>
   );
 }
