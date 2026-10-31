@@ -579,8 +579,9 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                   <span className="manage-provider-name">{providerName(p.id)}</span>
                   <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
                   {p.missingCredentials.length > 0 && (
-                    <span className="manage-error" tabIndex={0} role="img" aria-label={p.missingCredentials.join("; ")} title={p.missingCredentials.join("; ")}>
+                    <span className="manage-error" tabIndex={0} role="img" aria-label={p.missingCredentials.join("; ")}>
                       <ErrorFlashIcon />
+                      <span className="manage-error-tip" role="tooltip">{p.missingCredentials.join("; ")}</span>
                     </span>
                   )}
                   <span className="manage-auth">{p.authMethod}</span>
