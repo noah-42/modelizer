@@ -148,6 +148,31 @@ sequence (first gets `order = 1`). Ids not listed keep the price sort after the 
 Errors: `400` malformed list, `404` an id is not configured (nothing written), `409`
 duplicates, `422` write failed.
 
+### `GET /api/changes?kind=subscription|provider|token&limit=200`
+
+The changelog page's data: every user-made change, newest first, capped at 1000.
+
+```jsonc
+{
+  "changes": [{
+    "at": "2026-10-31T01:30:00.000Z",
+    "kind": "subscription",          // subscription | provider | token
+    "target": "cursor",              // provider id, or "cursor/OPENAI_ADMIN_API_KEY" for a token
+    "action": "update",              // add · update · delete · reorder · enable · disable · remove · set · oauth
+    "detail": "{\"fields\":{\"price\":{\"before\":60,\"after\":65}}}"
+  }]
+}
+```
+
+`detail` is JSON: subscription updates carry field-level `before`/`after`; token rows carry
+`{source}` status only — **the submitted value is never recorded**.
+
+### `GET /api/version`
+
+Build stamp for the page's server-older-than-UI check. Unknown `/api/*` paths answer JSON
+`404 {"error":"no such API route"}` — never the SPA's `index.html` — so a server older than
+the page produces a readable "restart modelizer" banner instead of an HTML parse error.
+
 ### `GET /api/providers/manage`
 
 The manage tab's listing: every built-in adapter with its lifecycle state. Reads never make a

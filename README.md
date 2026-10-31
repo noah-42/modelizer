@@ -67,6 +67,8 @@ shapes.
 | `GET /api/subscriptions/config` | The saved `[[subscription]]` overrides only — what the manage tab edits, without merged provider facts |
 | `POST` / `PUT` / `DELETE /api/subscriptions…` | Add, edit, and remove saved entries; `PUT /api/subscriptions/order` reorders them (see [API.md](API.md)) |
 | `GET /api/providers/manage` | The manage listing: per provider — enabled, order, auth method, auth health, and token *status* (never values) |
+| `GET /api/changes?kind=&limit=` | The changelog: every user-made subscription/provider/token change, newest first, field-level before→after |
+| `GET /api/version` | Build stamp the page uses to detect a server older than the UI |
 
 Notes on the two richest endpoints:
 
@@ -147,6 +149,21 @@ renewal, because none of those APIs states a charge date. Nothing is guessed:
 (`cursorAuth/accessToken`), sent only to `api2.cursor.sh`, and never logged or written back.
 `/api/usage-summary` needs a cursor.com cookie session, so Cursor contributes plan facts and no
 usage points; its card points at the Subscriptions tab.
+
+## How the pages relate
+
+| Page | Role | Relationship |
+|---|---|---|
+| Dashboard | Monitor — read-only, live status | shows what providers report; fix things on manage |
+| Subscriptions | Your plans, merged (provider facts + your overrides) | every card is editable in place; edits are recorded on the changelog |
+| Manage | Write — the only page that mutates config | subscriptions, providers, tokens; changes show on dashboard/subscriptions by the next refresh |
+| Changes | The record — every user-made change, newest first | subscriptions and provider/token changes with field-level before→after |
+| Audit | Machine record — polls, errors, and events | the changelog is the human view of the user-made subset |
+| Diary | Usage history over time | read-only |
+
+Every page paints instantly from the last-known data and refreshes in the background; the
+"updated X ago" stamps say how old the data is. If the page is newer than the running server,
+it says so and asks for a restart instead of failing cryptically.
 
 ## Manage tab
 
