@@ -89,6 +89,19 @@ function writeRequest(method: string, body?: unknown): RequestInit {
   return { method, ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }) };
 }
 
+/**
+ * Snapshot of every table a management mutation must never touch — everything except `changes`,
+ * which the changelog deliberately appends to.
+ */
+function observationSnapshot(raw: { query: (sql: string) => { all: () => unknown[] } }): string {
+  const tables = (
+    raw.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'changes' ORDER BY name").all() as Array<{
+      name: string;
+    }>
+  ).map((r) => r.name);
+  return JSON.stringify(tables.map((t) => raw.query(`SELECT * FROM "${t}" ORDER BY rowid`).all()));
+}
+
 async function listing(h: ReturnType<typeof appWith>): Promise<ManageResponse> {
   const response = await h.app.request("/api/providers/manage");
   expect(response.status).toBe(200);
@@ -159,7 +172,7 @@ describe("provider management", () => {
     mkdirSync(join(h.root, "claude", "projects"), { recursive: true });
     const originalEnv = { ...h.env };
     const originalConfig = readFileSync(h.path, "utf8");
-    const originalDb = h.db.raw.serialize();
+    const originalDb = observationSnapshot(h.db.raw);
     const commands = [...h.security.commands];
     const seen: Array<string | undefined> = [];
     const adapter = { ...claudeAdapter, collect: async (ctx: Parameters<typeof claudeAdapter.collect>[0]) => {
@@ -173,7 +186,10 @@ describe("provider management", () => {
     expect(JSON.parse(response)).toEqual({ id: "claude", oauthUsageEnabled: enabled });
     expect(h.env).toEqual({ ...originalEnv, CLAUDE_OAUTH_USAGE: enabled ? "1" : "0" });
     expect(readFileSync(h.path, "utf8")).toBe(originalConfig);
-    expect(h.db.raw.serialize()).toEqual(originalDb);
+    expect(observationSnapshot(h.db.raw)).toEqual(originalDb);
+    // the mutation itself is recorded in the changelog, and nowhere else
+    expect(h.db.listChanges({ limit: 5 })).toHaveLength(1);
+    expect(h.db.listChanges({ limit: 5 })[0]?.action).toBe("oauth");
     expect(h.security.commands).toEqual(commands);
     expect(h.security.store.size).toBe(0);
     expect(h.changes()).toBe(0);
@@ -257,12 +273,12 @@ describe("provider management", () => {
     writeFileSync(modelsPath, models);
     h.db.updateAdapterState("zai", { ok: false, error: "HTTP 429", at: AT });
     const state = h.db.getAdapterState("zai");
-    const before = h.db.raw.serialize();
+    const before = observationSnapshot(h.db.raw);
     await safeBody(await h.app.request("/api/providers/zai", writeRequest("DELETE")));
     expect(loadConfig(h.path).providers.zai?.enabled).toBe(false);
     expect(loadConfig(h.path).order).not.toContain("zai");
     expect(h.db.getAdapterState("zai")).toEqual(state);
-    expect(h.db.raw.serialize()).toEqual(before);
+    expect(observationSnapshot(h.db.raw)).toEqual(before);
     expect(h.env.ZAI_API_KEY).toBe(ENV_TOKEN);
     expect(h.security.store.get("ZAI_API_KEY")).toBe(SUBMITTED);
     expect(readFileSync(subscriptionsPath, "utf8")).toBe(subscriptions);

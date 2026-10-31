@@ -68,11 +68,12 @@ describe("keychain isolation (MODELIZER_KEYCHAIN_FILE)", () => {
       // found in the isolated file
       const after = resolveEnv({});
       expect(credentialStatus(after, "ZAI_API_KEY")).toMatchObject({ set: true, source: "keychain" });
-      // and the login keychain does NOT have it
-      const inLogin = spawnSync("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "ZAI_API_KEY"], {
+      // and the login keychain does NOT have the test value — the real key may legitimately live
+      // there on a machine that runs modelizer, so compare values instead of demanding absence
+      const inLogin = spawnSync("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "ZAI_API_KEY", "-w"], {
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
       });
-      expect(inLogin.status).not.toBe(0);
+      expect(inLogin.status !== 0 ? "" : (inLogin.stdout ?? "").trim()).not.toBe("test-value-123");
       removeSecret("ZAI_API_KEY");
       expect(credentialStatus(resolveEnv({}), "ZAI_API_KEY").source).toBe("absent");
     } finally {
