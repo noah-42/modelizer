@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  peekCache,
+  putCache,
   addModel,
   addSubscription,
   deleteSubscription,
@@ -127,8 +129,8 @@ export function App() {
 }
 
 function DashboardView() {
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [models, setModels] = useState<LlmModel[]>([]);
+  const [overview, setOverview] = useState<Overview | null>(() => peekCache<Overview>("overview"));
+  const [models, setModels] = useState<LlmModel[]>(() => peekCache<LlmModel[]>("models") ?? []);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [hidden, setHidden] = useState<string[]>(loadHidden);
@@ -146,6 +148,8 @@ function DashboardView() {
       try {
         const [ov, cat] = await Promise.all([fetchOverview(), fetchModels()]);
         if (alive) {
+          putCache("overview", ov);
+          putCache("models", cat.models);
           setOverview(ov);
           setModels(cat.models);
           setError(null);
@@ -417,8 +421,8 @@ const HEALTH_LABELS: Record<string, string> = {
 function ManageView() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [entries, setEntries] = useState<SavedSubscription[] | null>(null);
-  const [providers, setProviders] = useState<ManageProvider[] | null>(null);
+  const [entries, setEntries] = useState<SavedSubscription[] | null>(() => peekCache<SavedSubscription[]>("subs-config"));
+  const [providers, setProviders] = useState<ManageProvider[] | null>(() => peekCache<ManageProvider[]>("manage-providers"));
 
   // Add-subscription form (provider is required before any request is sent).
   const [newProvider, setNewProvider] = useState("");
@@ -446,6 +450,8 @@ function ManageView() {
   const load = async () => {
     try {
       const [config, manage] = await Promise.all([fetchSubscriptionConfig(), fetchManageProviders()]);
+      putCache("subs-config", config.entries);
+      putCache("manage-providers", manage.providers);
       setEntries(config.entries);
       setProviders(manage.providers);
       setError(null);
@@ -876,7 +882,7 @@ function ChangesView() {
 }
 
 function ModelsView() {
-  const [models, setModels] = useState<LlmModel[] | null>(null);
+  const [models, setModels] = useState<LlmModel[] | null>(() => peekCache<LlmModel[]>("models"));
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [provider, setProvider] = useState("openrouter");
@@ -889,6 +895,7 @@ function ModelsView() {
   const load = async () => {
     try {
       const body = await fetchModels();
+      putCache("models", body.models);
       setModels(body.models);
       setError(body.error);
     } catch (err) {
@@ -1079,8 +1086,8 @@ function usdPerM(rate: number): string {
 }
 
 function SubscriptionsView() {
-  const [data, setData] = useState<SubscriptionsResponse | null>(null);
-  const [saved, setSaved] = useState<SavedSubscription[] | null>(null);
+  const [data, setData] = useState<SubscriptionsResponse | null>(() => peekCache<SubscriptionsResponse>("subscriptions"));
+  const [saved, setSaved] = useState<SavedSubscription[] | null>(() => peekCache<SavedSubscription[]>("subs-config"));
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -1088,6 +1095,8 @@ function SubscriptionsView() {
   const load = async () => {
     try {
       const [res, config] = await Promise.all([fetchSubscriptions(), fetchSubscriptionConfig()]);
+      putCache("subscriptions", res);
+      putCache("subs-config", config.entries);
       setData(res);
       setSaved(config.entries);
       setError(null);

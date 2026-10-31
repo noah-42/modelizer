@@ -187,6 +187,27 @@ export interface ModelsResponse {
   error: string | null;
 }
 
+/**
+ * Last-known data per endpoint, kept so every page paints instantly and refreshes in the
+ * background (stale-while-revalidate). Memory-only: a fresh browser session reads the local
+ * server once, which is fast; afterwards navigation and reloads never wait on the network.
+ */
+export const dataCache = new Map<string, { at: number; data: unknown }>();
+
+export function peekCache<T>(key: string): T | null {
+  const hit = dataCache.get(key);
+  return hit === undefined ? null : (hit.data as T);
+}
+
+export function cacheAge(key: string): number | null {
+  const hit = dataCache.get(key);
+  return hit === undefined ? null : hit.at;
+}
+
+export function putCache<T>(key: string, data: T): void {
+  dataCache.set(key, { at: Date.now(), data });
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   return assertJson<T>(res);
