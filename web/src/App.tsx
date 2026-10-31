@@ -1005,69 +1005,74 @@ function ModelsView() {
       {models !== null && models.length === 0 && (
         <div className="banner">No models in the catalogue yet — paste an OpenRouter link above.</div>
       )}
-      {[...byProvider.entries()].map(([provider, list]) => (
-        <section key={provider} className="card">
-          <div className="card-head">
-            <h2 title={provider}>
-              <ProviderIcon id={provider} />
-              {providerName(provider)}
-            </h2>
+      {byProvider.size > 0 && (
+        <div className="models-table">
+          <div className="models-head" aria-hidden="true">
+            <span>model</span>
+            <span>context</span>
+            <span>price / Mtok</span>
+            <span>id</span>
+            <span />
           </div>
-          <div className="model-list">
-            {list.map((m) => (
-              <div key={m.id} className="model-row">
-                <span className="model-name">{m.name}</span>
-                {m.contextLength !== undefined && (
-                  <span className="muted">{fmtTokensShort(m.contextLength)} context</span>
-                )}
-                {m.promptUsdPerMTok !== undefined && m.completionUsdPerMTok !== undefined && (
-                  <span className="muted">
-                    {usdPerM(m.promptUsdPerMTok)} in · {usdPerM(m.completionUsdPerMTok)} out per Mtok
-                  </span>
-                )}
-                <span className="muted model-id" title={m.sourceUrl ?? m.id}>
-                  {m.sourceUrl !== undefined ? (
-                    <a href={m.sourceUrl} target="_blank" rel="noreferrer">
-                      {m.id}
-                    </a>
-                  ) : (
-                    m.id
-                  )}
-                </span>
-                <span className="model-order">
-                  <button
-                    className="order-btn"
-                    onClick={() => void move(list, list.indexOf(m), -1)}
-                    disabled={list.indexOf(m) === 0}
-                    aria-label={`move ${m.name} up`}
-                    title="show earlier"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    className="order-btn"
-                    onClick={() => void move(list, list.indexOf(m), 1)}
-                    disabled={list.indexOf(m) === list.length - 1}
-                    aria-label={`move ${m.name} down`}
-                    title="show later"
-                  >
-                    ↓
-                  </button>
-                </span>
-                <button
-                  className={armed === m.id ? "model-remove armed" : "model-remove"}
-                  onClick={() => void remove(m.id)}
-                  disabled={removing !== null}
-                  aria-label={`remove ${m.name}`}
-                  title={armed === m.id ? "click again to remove" : `remove ${m.name} from the catalogue`}
-                >
-                  {removing === m.id ? "removing…" : armed === m.id ? "confirm?" : "remove"}
-                </button>
+          {[...byProvider.entries()].map(([provider, list]) => (
+            <div key={provider} className="models-section">
+              <div className="models-provider">
+                <ProviderIcon id={provider} />
+                {providerName(provider)}
               </div>
-            ))}
-          </div>
-        </section>
-      ))}
+              {list.map((m) => (
+                <div key={m.id} className="models-row">
+                  <span className="model-name">{m.name}</span>
+                  <span className="muted">{m.contextLength !== undefined ? fmtTokensShort(m.contextLength) : "—"}</span>
+                  <span className="muted">
+                    {m.promptUsdPerMTok !== undefined && m.completionUsdPerMTok !== undefined
+                      ? `${usdPerM(m.promptUsdPerMTok)} in · ${usdPerM(m.completionUsdPerMTok)} out`
+                      : "—"}
+                  </span>
+                  <span className="muted model-id" title={m.sourceUrl ?? m.id}>
+                    {m.sourceUrl !== undefined ? (
+                      <a href={m.sourceUrl} target="_blank" rel="noreferrer">
+                        {m.id}
+                      </a>
+                    ) : (
+                      m.id
+                    )}
+                  </span>
+                  <span className="models-actions">
+                    <button
+                      className="order-btn"
+                      onClick={() => void move(list, list.indexOf(m), -1)}
+                      disabled={list.indexOf(m) === 0}
+                      aria-label={`move ${m.name} up`}
+                      title="show earlier"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      className="order-btn"
+                      onClick={() => void move(list, list.indexOf(m), 1)}
+                      disabled={list.indexOf(m) === list.length - 1}
+                      aria-label={`move ${m.name} down`}
+                      title="show later"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      className={armed === m.id ? "model-remove armed" : "model-remove"}
+                      onClick={() => void remove(m.id)}
+                      disabled={removing !== null}
+                      aria-label={`remove ${m.name}`}
+                      title={armed === m.id ? "click again to remove" : `remove ${m.name} from the catalogue`}
+                    >
+                      {removing === m.id ? "removing…" : armed === m.id ? "confirm?" : "remove"}
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

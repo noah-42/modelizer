@@ -1060,3 +1060,62 @@ code {
 .change-field code {
   font-size: 12px;
 }
+
+/* ---- models page: one columnar table, rules between rows, no floating cards ---- */
+.models-table {
+  display: flex;
+  flex-direction: column;
+}
+.models-head,
+.models-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 2fr) max-content;
+  gap: 14px;
+  align-items: baseline;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.models-head {
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom-width: 2px;
+}
+.models-provider {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 2px 4px;
+  font-weight: 600;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.models-actions {
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.models-provider .provider-icon {
+  width: 20px;
+  height: 20px;
+}
+@media (max-width: 700px) {
+  .models-head {
+    display: none;
+  }
+  .models-row {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+  .models-row > :nth-child(2),
+  .models-row > :nth-child(3) {
+    display: none;
+  }
+}
+@media (max-width: 480px) {
+  .model-add {
+    flex-wrap: wrap;
+  }
+  .model-add .model-url {
+    flex: 1 1 100%;
+  }
+}
