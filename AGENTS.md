@@ -46,7 +46,7 @@ scripts/              mocks and the Claude StopFailure hook
 | Reset notices / ntfy | `src/notify.ts` |
 | Schema | `src/db.ts` |
 | Dashboard | `web/src/App.tsx` |
-| Secrets | `src/secrets.ts`, `.env.example` |
+| Secrets | `src/secrets.ts`, `.env.example`; store/rotate keys with `scripts/set-key.sh <KEY_NAME>` — hidden prompt, write-time validation, agent-blind (agents never read or echo key material; they verify through the dashboard API instead) |
 
 ## CONVENTIONS
 
