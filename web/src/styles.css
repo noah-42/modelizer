@@ -1025,3 +1025,38 @@ code {
   padding: 2px 10px;
   min-height: 0;
 }
+
+/* ---- changelog page: one columnar list, hairline rules between rows ---- */
+.changes-list {
+  display: flex;
+  flex-direction: column;
+}
+.change-row {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 13px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.change-time {
+  font-variant-numeric: tabular-nums;
+  min-width: 90px;
+}
+.change-badge {
+  flex: none;
+}
+.change-action {
+  min-width: 70px;
+  font-weight: 600;
+}
+.change-target {
+  min-width: 160px;
+}
+.change-detail {
+  color: var(--muted);
+}
+.change-field code {
+  font-size: 12px;
+}

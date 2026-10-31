@@ -4,6 +4,7 @@ import {
   addSubscription,
   deleteSubscription,
   fetchAudit,
+  fetchChanges,
   fetchDiary,
   fetchManageProviders,
   fetchModels,
@@ -22,6 +23,7 @@ import {
   setToken,
   updateSubscription,
   type AuditEventRow,
+  type ChangeEntry,
   type DiaryDay,
   type LlmModel,
   type ManageProvider,
@@ -80,7 +82,7 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-type Tab = "dashboard" | "subscriptions" | "manage" | "models" | "audit" | "diary";
+type Tab = "dashboard" | "subscriptions" | "manage" | "changes" | "models" | "audit" | "diary";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -107,7 +109,7 @@ export function App() {
         <h1>modelizer</h1>
       </header>
       <nav className="tabs">
-        {(["dashboard", "subscriptions", "manage", "models", "audit", "diary"] as const).map((t) => (
+        {(["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary"] as const).map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
@@ -116,6 +118,7 @@ export function App() {
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
       {tab === "manage" && <ManageView />}
+      {tab === "changes" && <ChangesView />}
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
@@ -790,6 +793,85 @@ function ManageView() {
         </div>
       </section>
     </div>
+  );
+}
+
+/** Human words for one change row. */
+function changeText(c: ChangeEntry): ReactNode {
+  const what = c.kind === "token" ? `token ${c.target}` : `${c.kind} ${c.target}`;
+  if (c.detail === null) return <>{c.action} {what}</>;
+  try {
+    const d = JSON.parse(c.detail) as Record<string, unknown>;
+    if (typeof d.fields === "object" && d.fields !== null) {
+      const parts = Object.entries(d.fields as Record<string, { before: unknown; after: unknown }>).map(
+        ([field, v]) => (
+          <span key={field} className="change-field">
+            <code>{field}</code> {JSON.stringify(v.before)} <span className="muted">→</span> {JSON.stringify(v.after)}
+          </span>
+        ),
+      );
+      return <>{parts}</>;
+    }
+    if (Array.isArray(d.order)) return <>{what} · order {((d.order as string[]).join(" → "))}</>;
+    return <>{c.action} {what}</>;
+  } catch {
+    return <>{c.action} {what}</>;
+  }
+}
+
+function ChangesView() {
+  const [changes, setChanges] = useState<ChangeEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [kind, setKind] = useState<string>("");
+  const [tick, setTick] = useState(0);
+
+  const load = async () => {
+    try {
+      const body = await fetchChanges(kind === "" ? undefined : kind);
+      setChanges(body.changes);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  useEffect(() => {
+    void load();
+  }, [kind]);
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <>
+      <div className="head-line">
+        <span className="muted">{changes === null ? "loading" : `${changes.length} change${changes.length === 1 ? "" : "s"} · newest first`}</span>
+        <select
+          className="session-select"
+          value={kind}
+          onChange={(e) => setKind(e.target.value)}
+          aria-label="filter changes by kind"
+        >
+          <option value="">everything</option>
+          <option value="subscription">subscriptions</option>
+          <option value="provider">providers</option>
+          <option value="token">tokens</option>
+        </select>
+      </div>
+      {error && <div className="banner error">{error}</div>}
+      {changes !== null && changes.length === 0 && <div className="banner">No changes recorded yet — edits on the subscriptions and manage pages land here.</div>}
+      <div className="changes-list">
+        {(changes ?? []).map((c) => (
+          <div key={c.id} className={`change-row change-kind-${c.kind}`}>
+            <span className="change-time muted">{relTime(c.at, tick)}</span>
+            <span className={`manage-badge change-badge`}>{c.kind}</span>
+            <span className="change-action">{c.action}</span>
+            <span className="change-target">{c.kind === "token" ? c.target : providerName(c.target.split(", ")[0] ?? c.target)}</span>
+            <span className="change-detail">{changeText(c)}</span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

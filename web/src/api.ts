@@ -442,6 +442,25 @@ export async function removeToken(id: string, name: string): Promise<void> {
   }
 }
 
+export interface ChangeEntry {
+  id: number;
+  at: string;
+  kind: "subscription" | "provider" | "token";
+  target: string;
+  action: string;
+  detail: string | null;
+}
+
+export interface ChangesResponse {
+  changes: ChangeEntry[];
+}
+
+/** The user-made changes, newest first — the changelog page's data. */
+export function fetchChanges(kind?: string): Promise<ChangesResponse> {
+  const q = kind === undefined ? "" : `?kind=${kind}`;
+  return getJson<ChangesResponse>(`/api/changes${q}`);
+}
+
 /** Claude account-wide OAuth opt-in; process-local, nothing is written to Claude's own stores. */
 export async function setClaudeOAuthUsage(enabled: boolean): Promise<void> {
   const res = await fetch("/api/providers/claude/oauth-usage", {
