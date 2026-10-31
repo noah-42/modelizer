@@ -106,6 +106,118 @@ clock on the first request, and modelizer does not invent a time.
 never converted or added together. A prepaid term or a cancelled plan stays in `subscriptions`
 with `counts: false`. A malformed `subscriptions.toml` answers `422` with `error` set.
 
+### Subscription management (manage tab)
+
+These write `subscriptions.toml` textually: comments, field order, and hand-added fields
+survive, and a malformed file is an error (`422`), never overwritten.
+
+**`GET /api/subscriptions/config`** — the saved `[[subscription]]` blocks only, as written —
+not the merged rows the Subscriptions page shows.
+
+```sh
+curl -s http://127.0.0.1:7788/api/subscriptions/config
+# → 200 {"path": "subscriptions.toml", "entries": [{"provider": "cursor", "price": 60}]}
+```
+
+Errors: `422` the file could not be parsed.
+
+**`POST /api/subscriptions`** — add a block. `provider` is required and unique; every other
+field is optional: `plan`, `label`, `note`, `price` (>= 0), `priceNext`, `currency` (3 letters),
+`period` (`monthly`/`annual`), `renewsDay` (1–31), `renewsAt`, `endsAt`, `state` (`active`,
+`trialing`, `cancelled`, `past_due`, `unknown`), `seats` (>= 1).
+
+```sh
+curl -s -X POST http://127.0.0.1:7788/api/subscriptions \
+  -H "content-type: application/json" -d '{"provider": "zai", "price": 19, "renewsDay": 5}'
+# → 201 {"entry": {"provider": "zai", "price": 19, "renews_day": 5}, "path": "subscriptions.toml"}
+```
+
+Errors: `400` malformed body, `409` the provider already has a block (file unchanged), `422` a
+value fails the parse rules or the write failed.
+
+**`PUT /api/subscriptions/:provider`** — edit one block. A field absent from the body keeps its
+saved value; `null` (or `""` for a text field) clears it. The response is the saved entry, not
+a merged row. Errors: `400`/`422` as above, `404` no such block.
+
+**`DELETE /api/subscriptions/:provider`** — remove the saved override **only**. A plan the
+provider reports lives in the database facts and keeps appearing with `source != config`;
+deleting your note cancels nothing. Errors: `404` no such block, `422` removal failed.
+
+**`PUT /api/subscriptions/order`** — `"providers": ["zai", "cursor"]` in the wanted display
+sequence (first gets `order = 1`). Ids not listed keep the price sort after the ranked ones.
+Errors: `400` malformed list, `404` an id is not configured (nothing written), `409`
+duplicates, `422` write failed.
+
+### `GET /api/providers/manage`
+
+The manage tab's listing: every built-in adapter with its lifecycle state. Reads never make a
+live provider call and never include credential material.
+
+```jsonc
+{
+  "providers": [{
+    "id": "codex",
+    "displayName": "Codex",
+    "enabled": true,
+    "order": 4,
+    "missingCredentials": [],
+    "tokens": { "OPENAI_ADMIN_API_KEY": { "set": true, "source": "keychain", "shadowed": false } },
+    "authMethod": "app: ChatGPT login",   // api-key | app: <name> | oauth
+    "appAuthPresent": true,
+    "authHealth": "ok"                     // no-token | rejected | quota | ok | unknown
+  }],
+  "tokens": { "ZAI_API_KEY": { "set": true, "source": "env", "shadowed": false } }
+}
+```
+
+- `tokens[name].source` is `env` (read-only, wins while present), `keychain`, or `absent` — the
+  value itself is never included anywhere in the response.
+- `authHealth` is derived from stored poll state only: `no-token` (not configured), `rejected`
+  (last error was 401/403), `quota` (429/exhausted — an exhausted subscription is never
+  reported as a broken token), `ok` (recent success), `unknown` (never polled).
+- App-backed providers (`claude`, `codex`, `cursor`, `freellmapi`) carry `appAuthPresent`;
+  `claude` additionally carries `oauthUsageEnabled`.
+
+Errors: `422` the provider config could not be read.
+
+### Provider management (manage tab)
+
+All apply live: the running scheduler reconfigures by the next tick, and the server stays up
+even with zero providers enabled.
+
+**`PUT /api/providers/:id/enabled`** — `{"enabled": false}` flips that provider only. Errors:
+`400` non-boolean, `404` unknown id, `422` write failed.
+
+**`DELETE /api/providers/:id`** — remove an integration: disables it and drops it from the
+saved order. Subscriptions, usage history, models, and Keychain tokens are all kept. Errors:
+`404` unknown id, `422` write failed.
+
+**`PUT /api/providers/order`** — `{"ids": ["zai", "claude"]}` in the wanted card order; missing
+ids keep registry order after the ranked ones. Errors: `400` malformed list, `404` unknown id,
+`409` duplicates, `422` write failed.
+
+**`PUT` / `POST` / `DELETE /api/providers/:id/tokens/:name`** — store, shadow-store, or remove a
+credential in the macOS Keychain (`modelizer` service). `PUT` sets the effective value;
+`POST` stores a Keychain entry even when the environment shadows it; `DELETE` removes. The
+next poll picks the change up without a restart (the in-process credential snapshot is
+refreshed). Responses carry status only — `{set, source}` plus, for a shadowed entry,
+`"message": "shadowed by environment"` — never the value, which also means no log or response
+ever echoes what you sent.
+
+```sh
+curl -s -X PUT http://127.0.0.1:7788/api/providers/zai/tokens/ZAI_API_KEY \
+  -H "content-type: application/json" -d '{"value": "zk-…"}'
+# → 200 {"set": true, "source": "keychain", "shadowed": false}
+```
+
+Errors: `400` empty value, `404` the credential name does not belong to that provider, `409`
+the credential is environment-supplied (`PUT`/`DELETE` refuse; env wins while present), `422`
+Keychain or refresh failure.
+
+**`PUT /api/providers/claude/oauth-usage`** — `{"enabled": true}` sets `CLAUDE_OAUTH_USAGE` for
+the running process only: the opt-in for Claude's account-wide OAuth usage reporting. Nothing
+is written to Claude's own auth stores, and no token is refreshed. Errors: `400` non-boolean.
+
 ### `GET /api/models`
 
 The model → provider catalogue from `models.toml`:

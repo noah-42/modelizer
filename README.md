@@ -64,6 +64,9 @@ shapes.
 | `GET /api/models` | Model → provider associations from `models.toml`, with context and per-million pricing where known |
 | `POST /api/models` | Add an entry from an OpenRouter link (`{url, provider?}`); the server reads the metadata from OpenRouter and appends the block |
 | `GET /api/subscriptions` | The Subscriptions page: plan, billing state, price, renewal dates, totals per currency |
+| `GET /api/subscriptions/config` | The saved `[[subscription]]` overrides only — what the manage tab edits, without merged provider facts |
+| `POST` / `PUT` / `DELETE /api/subscriptions…` | Add, edit, and remove saved entries; `PUT /api/subscriptions/order` reorders them (see [API.md](API.md)) |
+| `GET /api/providers/manage` | The manage listing: per provider — enabled, order, auth method, auth health, and token *status* (never values) |
 
 Notes on the two richest endpoints:
 
@@ -145,12 +148,44 @@ renewal, because none of those APIs states a charge date. Nothing is guessed:
 `/api/usage-summary` needs a cursor.com cookie session, so Cursor contributes plan facts and no
 usage points; its card points at the Subscriptions tab.
 
+## Manage tab
+
+The manage tab handles the lifecycle the other pages only display: your saved billing entries
+and the built-in provider integrations. Changes apply live — the running process reconfigures
+its polling by the next tick, no restart needed — and the dashboard stays view-only.
+
+**Subscriptions section.** Add, edit, and delete entries in `subscriptions.toml`, and order
+them with ↑/↓. Deleting removes **only the saved override**: a plan the provider itself reports
+keeps showing on the Subscriptions page, honestly labelled — removing your note cancels
+nothing. The manage tab lists the saved entries alone (`GET /api/subscriptions/config`), never
+the merged rows.
+
+**Providers section.** Enable, remove, and reorder the built-in integrations. Removing one
+disables it and drops it from the saved order — subscriptions, usage history, models, and
+Keychain tokens are all kept, so re-enabling later picks up where it left off. Each row shows:
+
+- **Auth method** — `api-key`, or which app login backs it (`app: ChatGPT login` for Codex,
+  `app: Claude Code login`, `app: Cursor login`). These are read-only views of credentials
+  those apps already own; modelizer never refreshes, copies, or writes them. The one opt-in is
+  Claude's account-wide OAuth usage toggle (`CLAUDE_OAUTH_USAGE` for the running process).
+- **Auth health** — derived from stored poll results only, never a live provider call:
+  `no token`, `token rejected` (401/403), `quota` (429/exhausted — an exhausted subscription is
+  never shown as a broken token), `ok`, or `not polled yet`.
+- **Tokens** — add, replace, or remove API keys. Values go into the macOS Keychain
+  (`modelizer` service) and are **never returned, displayed, or logged** — the UI shows only
+  `{set, source}` status. A key supplied by the environment is read-only and wins while
+  present: a Keychain write for it is stored but flagged "shadowed by environment".
+
+Saved order (subscriptions and providers alike) persists in the TOML files and survives
+restart; unlisted entries keep their default sort after the ranked ones.
+
 ## Security
 
 | Principle | What modelizer does |
 |---|---|
 | Dedicated, revocable keys | Z.AI (and most providers here) have no read-only scope — a key that reads usage can also run inference. Create a separate key per tool, name it `modelizer`, revoke it independently. Never reuse the key your coding agents run on. |
 | Keychain over `.env` | Secrets resolve from the environment first, then the macOS keychain — no plaintext file needed (see below). |
+| Tokens are write-only from the app | The manage tab stores and removes Keychain keys, but no endpoint ever returns a token value — responses carry `{set, source}` status only. |
 | Minimal egress | Each adapter GETs only its documented endpoints, key in the `Authorization` header over TLS. Keys never appear in URLs, logs, the database, or API responses (`raw_polls` archives response bodies only — providers never echo your key back). |
 | Localhost only | The dashboard binds `127.0.0.1` by default; the data itself (quotas, spend) is sensitive. |
 | Token for the rest | Set `[server] token` (or `MODELIZER_TOKEN`) to let other machines read the API: local callers stay trusted, anything remote must present it as `Authorization: Bearer …` or `?token=…`. The token has no scopes — treat it like a key and keep the bind narrow. |

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,10 @@ import {
   nextRenewal,
   SubscriptionCatalog,
   SubscriptionConfigError,
+  appendSubscription,
+  removeSubscription,
+  setSubscriptionOrder,
+  updateSubscription,
   type SubscriptionFacts,
 } from "./subscriptions";
 
@@ -135,6 +139,61 @@ describe("loadSubscriptions", () => {
   test("rejects a negative price", () => {
     const path = configFile("neg.toml", '[[subscription]]\nprovider = "claude"\nprice = -1\n');
     expect(() => loadSubscriptions(path)).toThrow(/price must be >= 0/);
+  });
+});
+
+describe("subscription writers", () => {
+  test("appends and reloads a subscription block, including a zero price", () => {
+    const path = configFile("writer-add.toml", "# keep this comment\n");
+    appendSubscription({ provider: "claude", label: "Pro", price: 0 }, path);
+    expect(loadSubscriptions(path)).toEqual([{ provider: "claude", label: "Pro", price: 0 }]);
+  });
+
+  test("sets and clears fields without writing empty values", () => {
+    const path = configFile("writer-update.toml", '[[subscription]]\nprovider = "claude"\nlabel = "old"\nprice = 20\n');
+    updateSubscription("claude", { label: "new", price: null }, path);
+    expect(loadSubscriptions(path)).toEqual([{ provider: "claude", label: "new" }]);
+    expect(readFileSync(path, "utf8")).not.toContain('label = ""');
+  });
+
+  test("removes only the selected block and preserves remaining bytes", () => {
+    const remaining = '[[subscription]]\nprovider = "cursor"\nprice = 5\n';
+    const path = configFile("writer-remove.toml", `[[subscription]]\nprovider = "claude"\nprice = 20\n\n${remaining}`);
+    removeSubscription("claude", path);
+    expect(readFileSync(path, "utf8")).toBe(remaining);
+  });
+
+  test("writes order values from one through the provider count", () => {
+    const path = configFile("writer-order.toml", '[[subscription]]\nprovider = "claude"\n\n[[subscription]]\nprovider = "cursor"\n');
+    setSubscriptionOrder(["cursor", "claude"], path);
+    expect(loadSubscriptions(path)).toEqual([{ provider: "claude", order: 2 }, { provider: "cursor", order: 1 }]);
+  });
+
+  test("lists reloaded subscriptions in saved order before unranked price-sorted rows", () => {
+    const path = configFile("writer-catalog-order.toml", [
+      '[[subscription]]', 'provider = "claude"', "price = 20", "",
+      '[[subscription]]', 'provider = "cursor"', "price = 60", "",
+      '[[subscription]]', 'provider = "codex"', "price = 200", "",
+    ].join("\n"));
+    setSubscriptionOrder(["claude", "cursor"], path);
+    const catalog = new SubscriptionCatalog(loadSubscriptions(path), [], NOW);
+    expect(catalog.list().map((subscription) => subscription.provider)).toEqual(["claude", "cursor", "codex"]);
+  });
+
+  test("rejects duplicate adds and unknown remove or order without changing bytes", () => {
+    const path = configFile("writer-errors.toml", '[[subscription]]\nprovider = "claude"\n');
+    const before = readFileSync(path, "utf8");
+    expect(() => appendSubscription({ provider: "claude" }, path)).toThrow(SubscriptionConfigError);
+    expect(() => removeSubscription("missing", path)).toThrow(SubscriptionConfigError);
+    expect(() => setSubscriptionOrder(["missing"], path)).toThrow(SubscriptionConfigError);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("rejects malformed files without overwriting them", () => {
+    const malformed = '[[subscription]\nprovider = "claude"\n';
+    const path = configFile("writer-malformed.toml", malformed);
+    expect(() => appendSubscription({ provider: "cursor" }, path)).toThrow();
+    expect(readFileSync(path, "utf8")).toBe(malformed);
   });
 });
 
