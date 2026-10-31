@@ -1,30 +1,16 @@
 :root {
-  color-scheme: light dark;
-  --bg: #f6f7f9;
+  color-scheme: light;
+  --bg: #ffffff;
   --card: #ffffff;
   --text: #1a1d23;
   --muted: #6b7280;
   --border: #e3e6ea;
   --accent: #2563eb;
   --accent-soft: #eff4ff;
-  --good: #16a34a;
+  --good: #15803d;
   --good-soft: #ecfdf3;
-  --warn: #d97706;
+  --warn: #b45309;
   --bad: #dc2626;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14161a;
-    --card: #1d2026;
-    --text: #e8eaed;
-    --muted: #9aa1ac;
-    --border: #2c3038;
-    --accent: #60a5fa;
-    --accent-soft: #1c2836;
-    --good: #34d399;
-    --good-soft: #14251d;
-    --warn: #fbbf24;
-  }
 }
 
 * {
@@ -81,6 +67,20 @@ body {
   color: var(--text);
   font-weight: 600;
   border-bottom-color: var(--accent);
+}
+@media (max-width: 480px) {
+  .tabs {
+    gap: 0;
+  }
+  .tab {
+    padding-inline: 8px;
+  }
+}
+@media (max-width: 360px) {
+  .tab {
+    font-size: 12px;
+    padding-inline: 4px;
+  }
 }
 .model-add {
   display: flex;
@@ -322,10 +322,11 @@ body {
 }
 .cards {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .card {
+  min-width: 0;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -345,6 +346,18 @@ body {
   font-size: 19px;
   /* The card's own content is the hierarchy; the headline only names the provider. */
   font-weight: 400;
+}
+@media (max-width: 360px) {
+  .card {
+    padding-inline: 12px;
+  }
+  .card-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .badges {
+    margin-inline-start: auto;
+  }
 }
 /* Brand marks are what you scan for, so they read at a glance on the headline. */
 .card-head h2 .provider-icon {
@@ -374,6 +387,11 @@ body {
 .chevron.open {
   transform: rotate(90deg);
 }
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}
 /* A five-hour refresh, kept visible above the folded detail: it decides whether you can work. */
 .window-reset {
   display: flex;
@@ -387,6 +405,61 @@ body {
 /* Kept upright and non-bold: this line is a status read-out, not a heading. */
 .window-reset .countdown {
   font-variant-numeric: tabular-nums;
+}
+.quota-windows {
+  display: grid;
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.quota-window {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+}
+.quota-window + .quota-window {
+  border-top: 1px solid var(--border);
+}
+.quota-window-usage,
+.quota-window-reset {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+.quota-window-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.quota-window-value {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.quota-reset-timing {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.quota-countdown {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 480px) {
+  .quota-window {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .quota-window-reset {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+  }
 }
 .card-body {
   margin-top: 10px;
@@ -414,6 +487,7 @@ body {
 }
 .badges {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 .badge {
@@ -690,9 +764,9 @@ code {
   color: var(--warn);
 }
 
-/* ---- manage view: pure white regardless of the dashboard theme ----
-   The white contract is scoped to .manage-view only; the dashboard's
-   dark-mode rules above are deliberately untouched. */
+/* ---- manage view ----
+   The page is light-only, so the manage view simply stays white; the
+   explicit background keeps the contract if surface tokens ever change. */
 .manage-view {
   background: #ffffff;
   color: #111318;
@@ -872,5 +946,55 @@ code {
   }
   .manage-view .add-btn {
     min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .card-head {
+    flex-wrap: wrap;
+  }
+  .card-toggle {
+    white-space: nowrap;
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .card-toggle {
+    min-height: 44px;
+  }
+  .icon-btn {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    border: 0;
+  }
+  .icon-btn::before {
+    content: "";
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+  .icon-btn:hover {
+    border-color: transparent;
+  }
+  .icon-btn:hover::before {
+    border-color: var(--muted);
+  }
+  .chip {
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  .quota-window-label {
+    font-size: 13px;
+  }
+  .quota-window-value,
+  .quota-reset-timing {
+    font-size: 15px;
   }
 }
