@@ -130,9 +130,6 @@ export function App() {
       <header className="header">
         <img className="header-logo" src="/modelizer-icon.svg" alt="" width={26} height={26} />
         <h1>modelizer</h1>
-        <a className="header-portal" href="http://127.0.0.1:5001/apps">
-          Local apps
-        </a>
       </header>
       <nav className="tabs">
         {TABS.map((t) => (
@@ -441,6 +438,37 @@ const HEALTH_LABELS: Record<string, string> = {
  * the dashboard's theme — the styling contract is scoped to `.manage-view` in styles.css.
  * Tokens are write-only here: the API never returns a value, and the inputs never prefill.
  */
+/** Small stroke icons for the manage card actions; inherit currentColor. */
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M13.5 3.5l3 3L7 16H4v-3l9.5-9.5z" />
+    </svg>
+  );
+}
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 5h14M8 5V3h4v2M5 5l1 12h8l1-12M8 9v5M12 9v5" />
+    </svg>
+  );
+}
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M10 4v12M4 10h12" />
+    </svg>
+  );
+}
+function ErrorFlashIcon() {
+  return (
+    <svg className="manage-error-icon" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10 3L1.5 17h17L10 3z" />
+      <path d="M10 9v4M10 15.5v.01" />
+    </svg>
+  );
+}
+
 function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -452,6 +480,9 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   // Token form: one provider credential at a time; the value lives only in this input.
   const [tokenForm, setTokenForm] = useState<{ id: string; name: string } | null>(null);
   const [tokenValue, setTokenValue] = useState("");
+
+  // Providers with more than one key collapse to a summary line; click expands.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const load = async () => {
     try {
@@ -514,6 +545,15 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   const dropToken = (id: string, name: string) =>
     void run(() => removeToken(id, name), `${name} removed from the Keychain`);
 
+  const tokenEntries = (p: ManageProvider) => Object.entries(p.tokens);
+  const keyCount = (p: ManageProvider) => tokenEntries(p).filter(([, t]) => t.source !== "absent").length;
+  const worstStatus = (p: ManageProvider) => {
+    const statuses = tokenEntries(p).map(([, t]) => t.source);
+    if (statuses.includes("absent")) return "not set";
+    if (statuses.includes("env")) return "env";
+    return "in Keychain";
+  };
+
   return (
     <div className="manage-view">
       <div className="head-line">
@@ -525,93 +565,146 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
       {error && <div className="banner error manage-banner">{error}</div>}
       {status && <div className="banner manage-banner">{status}</div>}
 
-      <section className="card manage-section">
+      <section className="manage-section">
         <h2>Providers</h2>
         <p className="manage-hint">Built-in integrations. Removing one keeps its subscriptions, history, models and tokens; changes apply without restarting.</p>
-        <div className="manage-list">
-          {(providers ?? []).map((p, i) => (
-            <div key={p.id} className="manage-row manage-provider">
-              <div className="manage-provider-title">
-                <ProviderIcon id={p.id} />
-                <span className="manage-provider-name">{providerName(p.id)}</span>
-                <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
-                <span className="manage-auth">{p.authMethod}</span>
-              </div>
-              <div className="manage-line">
-                <label className="manage-toggle">
-                  <input
-                    type="checkbox"
-                    checked={p.enabled}
-                    onChange={(e) => toggleProvider(p.id, e.target.checked)}
-                    aria-label={`enable ${p.id}`}
-                  />
-                  enabled
-                </label>
-                <span className="manage-actions">
-                  <button className="manage-small" onClick={() => moveProvider(i, -1)} disabled={i === 0} aria-label={`move ${p.id} up`}>↑</button>
-                  <button className="manage-small" onClick={() => moveProvider(i, 1)} disabled={i === (providers?.length ?? 0) - 1} aria-label={`move ${p.id} down`}>↓</button>
-                  <button className="manage-small manage-danger" onClick={() => removeProv(p.id)}>
-                    {armedProvider === p.id ? "confirm remove" : "remove"}
-                  </button>
-                </span>
-              </div>
-              {p.oauthUsageEnabled !== undefined && (
-                <label className="manage-toggle manage-oauth">
-                  <input
-                    type="checkbox"
-                    checked={p.oauthUsageEnabled}
-                    onChange={(e) => void run(() => setClaudeOAuthUsage(e.target.checked), "Claude OAuth preference updated")}
-                    aria-label="use Claude account-wide OAuth"
-                  />
-                  account-wide OAuth usage (opt-in, process-local)
-                </label>
-              )}
-              {p.missingCredentials.length > 0 && (
-                <span className="manage-missing">missing: {p.missingCredentials.join(", ")}</span>
-              )}
-              {Object.entries(p.tokens).map(([name, token]) => (
-                <div key={name} className="manage-line manage-token-row">
-                  <span className="manage-token-label">
-                    <code>{name}</code>
-                    <span className="muted">
-                      {token.source === "env"
-                        ? "set by environment (read-only)"
-                        : token.source === "keychain"
-                          ? token.shadowed
-                            ? "in Keychain — shadowed by environment"
-                            : "in Keychain"
-                          : "not set"}
-                    </span>
-                  </span>
-                  {tokenForm?.id === p.id && tokenForm.name === name ? (
-                    <span className="manage-token-form">
-                      <input
-                        type="password"
-                        className="manage-input"
-                        placeholder="paste value — validated, never shown again"
-                        value={tokenValue}
-                        onChange={(e) => setTokenValue(e.target.value)}
-                        onKeyDown={(e) => e.key === "Enter" && void submitToken()}
-                        aria-label={`value for ${name}`}
-                      />
-                      <button className="add-btn" onClick={() => void submitToken()} disabled={tokenValue === ""}>store</button>
-                      <button className="manage-small" onClick={() => { setTokenForm(null); setTokenValue(""); }}>cancel</button>
-                    </span>
-                  ) : (
-                    <span className="manage-actions">
-                      <button className="manage-small" onClick={() => { setTokenForm({ id: p.id, name }); setTokenValue(""); }}>
-                        {token.source === "absent" ? "add" : "replace"}
-                      </button>
-                      {token.source === "keychain" && !token.shadowed && (
-                        <button className="manage-small manage-danger" onClick={() => dropToken(p.id, name)}>remove</button>
-                      )}
+        <div className="cards">
+          {(providers ?? []).filter((p) => p.enabled).map((p) => {
+            const entries = tokenEntries(p);
+            const isExpanded = expanded.has(p.id);
+            return (
+              <div key={p.id} className="card manage-card">
+                <div className="manage-card-title">
+                  <ProviderIcon id={p.id} />
+                  <span className="manage-provider-name">{providerName(p.id)}</span>
+                  <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
+                  {p.missingCredentials.length > 0 && (
+                    <span className="manage-error" tabIndex={0} role="img" aria-label={p.missingCredentials.join("; ")} title={p.missingCredentials.join("; ")}>
+                      <ErrorFlashIcon />
                     </span>
                   )}
+                  <span className="manage-auth">{p.authMethod}</span>
                 </div>
-              ))}
-            </div>
-          ))}
+                <div className="manage-line">
+                  <span />
+                  <label className="switch" aria-label={`enabled — poll ${providerName(p.id)} and show it on the dashboard`}>
+                    <input
+                      type="checkbox"
+                      checked={p.enabled}
+                      onChange={(e) => toggleProvider(p.id, e.target.checked)}
+                    />
+                    <span className="switch-slider" />
+                  </label>
+                </div>
+                <div className="manage-line">
+                  <span />
+                  <span className="manage-actions">
+                    <button className="manage-tiny" onClick={() => moveProvider(providers.indexOf(p), -1)} disabled={providers.indexOf(p) === 0} aria-label={`move ${p.id} up`}>↑</button>
+                    <button className="manage-tiny" onClick={() => moveProvider(providers.indexOf(p), 1)} disabled={providers.indexOf(p) === providers.length - 1} aria-label={`move ${p.id} down`}>↓</button>
+                    <button
+                      className="manage-tiny manage-danger"
+                      onClick={() => removeProv(p.id)}
+                      aria-label={armedProvider === p.id ? `confirm remove ${p.id}` : `remove ${p.id}`}
+                      title={armedProvider === p.id ? "click again to confirm" : "remove provider"}
+                    >
+                      <span className={armedProvider === p.id ? "manage-armed" : undefined}><TrashIcon /></span>
+                    </button>
+                  </span>
+                </div>
+                {entries.length > 1 && !isExpanded ? (
+                  <button className="manage-line manage-keys-summary" onClick={() => setExpanded(new Set([...expanded, p.id]))} aria-expanded={false}>
+                    <span>{keyCount(p)} of {entries.length} keys set · {worstStatus(p)}</span>
+                    <span className="manage-actions">
+                      <span className="manage-tiny manage-expand-chevron" aria-hidden="true">▾</span>
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    {entries.length > 1 && (
+                      <div className="manage-line">
+                        <button className="manage-tiny manage-keys-collapse" onClick={() => setExpanded(new Set([...expanded].filter((x) => x !== p.id)))} aria-expanded={true}>
+                          ▴ collapse keys
+                        </button>
+                        <span />
+                      </div>
+                    )}
+                    {entries.map(([name, token]) => (
+                      <div key={name} className="manage-line manage-token-row">
+                        {tokenForm?.id === p.id && tokenForm.name === name ? (
+                          <>
+                            <input
+                              type="password"
+                              className="manage-input"
+                              placeholder="paste value — validated, never shown again"
+                              value={tokenValue}
+                              onChange={(e) => setTokenValue(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && void submitToken()}
+                              aria-label={`value for ${name}`}
+                            />
+                            <span className="manage-actions">
+                              <button className="manage-tiny" onClick={() => void submitToken()} disabled={tokenValue === ""} aria-label={`store ${name}`}>store</button>
+                              <button className="manage-tiny" onClick={() => { setTokenForm(null); setTokenValue(""); }} aria-label="cancel">cancel</button>
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="manage-token-label">
+                              <span>{name}</span>
+                              <span className="muted">
+                                {token.source === "env"
+                                  ? "set by environment (read-only)"
+                                  : token.source === "keychain"
+                                    ? token.shadowed
+                                      ? "in Keychain — shadowed by environment"
+                                      : "in Keychain"
+                                    : "not set"}
+                              </span>
+                            </span>
+                            <span className="manage-actions">
+                              {token.source === "env" ? null : token.source === "keychain" ? (
+                                <>
+                                  <button className="manage-tiny manage-icon-btn" onClick={() => { setTokenForm({ id: p.id, name }); setTokenValue(""); }} aria-label={`edit ${name}`} title="edit — replace this key">
+                                    <PencilIcon />
+                                  </button>
+                                  {!token.shadowed && (
+                                    <button className="manage-tiny manage-icon-btn manage-danger" onClick={() => dropToken(p.id, name)} aria-label={`remove ${name}`} title="remove this key">
+                                      <TrashIcon />
+                                    </button>
+                                  )}
+                                </>
+                              ) : (
+                                <button className="manage-tiny manage-icon-btn" onClick={() => { setTokenForm({ id: p.id, name }); setTokenValue(""); }} aria-label={`add ${name}`} title="add this key">
+                                  <PlusIcon />
+                                </button>
+                              )}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
+        {(providers ?? []).some((p) => !p.enabled) && (
+          <div className="manage-addprovider">
+            <span className="muted">add a provider:</span>
+            {(providers ?? []).filter((p) => !p.enabled).map((p) => (
+              <button
+                key={p.id}
+                className="manage-tiny manage-add-btn"
+                onClick={() => toggleProvider(p.id, true)}
+                aria-label={`add ${providerName(p.id)}`}
+                title={`enable ${providerName(p.id)} — polling starts on the next tick`}
+              >
+                <PlusIcon />
+                {providerName(p.id)}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

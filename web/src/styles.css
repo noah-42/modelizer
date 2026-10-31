@@ -27,22 +27,14 @@ body {
   margin: 0 auto;
   padding: 24px 16px 64px;
 }
+.page-wide {
+  max-width: 1040px;
+}
 .header {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-}
-.header-portal {
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted);
-  text-decoration: none;
-}
-.header-portal:hover {
-  color: var(--accent);
-  text-decoration: underline;
 }
 .header-logo {
   flex: none;
@@ -884,34 +876,183 @@ code {
   align-items: stretch;
   gap: 8px;
 }
-/* Provider title mirrors the dashboard card head: 26px brand mark you can scan. */
-.manage-provider-title {
+/* Provider cards: 2×N grid, each card internally two-column (label left, control right). */
+.manage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .manage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.manage-card {
   display: flex;
+  flex-direction: column;
   gap: 10px;
+  margin: 0;
+}
+.manage-card-title {
+  display: flex;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
-.manage-provider-title .provider-icon {
-  width: 26px;
-  height: 26px;
+.manage-card-title .provider-icon {
+  width: 52px;
+  height: 52px;
 }
-.manage-provider-title .provider-icon-text {
-  font-size: 15px;
+.manage-card-title .provider-icon-text {
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
 }
 .manage-provider-name {
   font-size: 15px;
 }
-/* Every control row shares the dashboard's aligned two-column rhythm. */
-.manage-line,
-.manage-row.manage-line {
+.manage-card-title .manage-auth {
+  margin-left: auto;
+}
+/* Flashing error icon: pulses to catch the eye, hover for the full message. */
+.manage-error {
+  display: inline-flex;
+  align-items: center;
+  color: var(--bad, #b42318);
+  cursor: help;
+}
+.manage-error-icon {
+  animation: manage-error-flash 0.9s ease-in-out 6;
+}
+@keyframes manage-error-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+/* Every control row: two columns, label left, control right. */
+.manage-line {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 16px;
+  gap: 8px 12px;
   align-items: center;
 }
 .manage-line .manage-actions {
   margin-left: 0;
   justify-self: end;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.manage-line-label {
+  font-size: 13px;
+}
+/* Short reorder/action buttons — 28px, not the 44px touch rows. */
+.manage-tiny {
+  font-size: 12px;
+  min-height: 28px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  border: 1px solid #d7dbe2;
+  background: #ffffff;
+  color: #111318;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.manage-tiny:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.manage-tiny.manage-danger {
+  color: #b42318;
+  border-color: #e6b8b3;
+}
+.manage-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+.manage-icon-btn svg {
+  pointer-events: none;
+}
+.manage-armed {
+  display: inline-flex;
+}
+.manage-tiny .manage-armed {
+  color: #ffffff;
+}
+.manage-tiny:has(.manage-armed) {
+  background: #b42318;
+  border-color: #b42318;
+}
+.manage-keys-summary {
+  border: 1px dashed #d7dbe2;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: #111318;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+.manage-keys-collapse {
+  border: 0;
+  background: none;
+  color: var(--muted, #6b7280);
+  padding: 0;
+  cursor: pointer;
+  font-size: 12px;
+  justify-self: start;
+}
+.manage-expand-chevron {
+  color: var(--muted, #6b7280);
+}
+/* iOS-style toggle switch for enabled. */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 24px;
+  justify-self: end;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  background: #d7dbe2;
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  left: 2px;
+  top: 2px;
+  background: #ffffff;
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.switch input:checked + .switch-slider {
+  background: var(--accent, #2f6fed);
+}
+.switch input:checked + .switch-slider::before {
+  transform: translateX(16px);
+}
+.switch input:focus-visible + .switch-slider {
+  outline: 2px solid var(--accent, #2f6fed);
+  outline-offset: 2px;
 }
 .manage-badge {
   font-size: 11px;
@@ -1176,6 +1317,21 @@ code {
   gap: 10px;
   min-width: 0;
 }
-.manage-token-label code {
+.manage-token-label span:first-child {
   white-space: nowrap;
+  font-family: inherit;
+}
+
+.manage-addprovider {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  font-size: 13px;
+}
+.manage-add-btn {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
 }
