@@ -585,10 +585,7 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                     </span>
                   )}
                   <span className="manage-auth">{p.authMethod}</span>
-                </div>
-                <div className="manage-line">
-                  <span />
-                  <label className="switch" aria-label={`enabled — poll ${providerName(p.id)} and show it on the dashboard`}>
+                  <label className="switch manage-switch-top" aria-label={`enabled — poll ${providerName(p.id)} and show it on the dashboard`}>
                     <input
                       type="checkbox"
                       checked={p.enabled}
