@@ -46,6 +46,20 @@ export interface AuditEventRow {
   detail: string | null;
 }
 
+/** One user-made change, recorded for the changelog page. Never carries secret values. */
+export interface ChangeRow {
+  id: number;
+  at: string;
+  /** `subscription` | `provider` | `token` — what part of the config moved. */
+  kind: "subscription" | "provider" | "token";
+  /** What changed: a provider id, or `provider/SECRET_NAME` for a token. */
+  target: string;
+  /** add · update · delete · reorder · enable · disable · remove · set · oauth */
+  action: string;
+  /** Field-level before→after (JSON); token rows carry status only, never values. */
+  detail: string | null;
+}
+
 export interface Db {
   raw: Database;
   insertPoints(points: UsagePoint[]): void;
@@ -53,6 +67,8 @@ export interface Db {
   updateAdapterState(provider: string, patch: { ok: boolean; error?: string; at: string }): void;
   getAdapterState(provider: string): AdapterStateRow | undefined;
   getAllAdapterStates(): AdapterStateRow[];
+  addChange(at: string, kind: ChangeRow["kind"], target: string, action: string, detail?: string): void;
+  listChanges(opts: { limit: number; kind?: ChangeRow["kind"] | undefined }): ChangeRow[];
   /** Latest captured_at per (provider, kind, label, model, day) — the dashboard's main read. */
   latestPoints(): UsagePoint[];
   pointsSince(provider: string, sinceIso: string): UsagePoint[];
@@ -163,6 +179,16 @@ CREATE TABLE IF NOT EXISTS subscription_facts (
   facts TEXT NOT NULL,
   observed_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target TEXT NOT NULL,
+  action TEXT NOT NULL,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_changes_at ON changes(at);
 `;
 
 const INSERT_POINT = `
@@ -424,6 +450,19 @@ export function openDb(path: string): Db {
           .all({ $session: opts.sessionId, $limit: opts.limit }) as AuditEventRow[];
       }
       return db.prepare("SELECT * FROM audit_events ORDER BY id DESC LIMIT $limit").all({ $limit: opts.limit }) as AuditEventRow[];
+    },
+    addChange(at, kind, target, action, detail) {
+      db.prepare(
+        "INSERT INTO changes (at, kind, target, action, detail) VALUES ($at, $kind, $target, $action, $detail)",
+      ).run({ $at: at, $kind: kind, $target: target, $action: action, $detail: detail ?? null });
+    },
+    listChanges(opts) {
+      if (opts.kind !== undefined) {
+        return db
+          .prepare("SELECT * FROM changes WHERE kind = $kind ORDER BY id DESC LIMIT $limit")
+          .all({ $kind: opts.kind, $limit: opts.limit }) as ChangeRow[];
+      }
+      return db.prepare("SELECT * FROM changes ORDER BY id DESC LIMIT $limit").all({ $limit: opts.limit }) as ChangeRow[];
     },
     close() {
       db.close();

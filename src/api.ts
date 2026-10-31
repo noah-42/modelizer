@@ -149,6 +149,16 @@ export function buildApi(deps: ProviderRouteDeps & {
   const modelsPath = () => env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
   const subscriptionsPath = () => env.MODELIZER_SUBSCRIPTIONS?.trim() || DEFAULT_SUBSCRIPTIONS_PATH;
   const expectedToken = deps.token ?? env.MODELIZER_TOKEN?.trim() ?? "";
+/** One user-made change, for the changelog page. Never carries secret values. */
+function recordChange(
+  kind: "subscription" | "provider" | "token",
+  target: string,
+  action: string,
+  detail?: Record<string, unknown>,
+): void {
+  db.addChange(now().toISOString(), kind, target, action, detail === undefined ? undefined : JSON.stringify(detail));
+}
+
 
   /**
    * Local callers — the dashboard in a browser, scripts on this machine — are trusted. Everything
@@ -349,6 +359,15 @@ export function buildApi(deps: ProviderRouteDeps & {
     }
   });
 
+  /** The user-made changes, newest first — the changelog page's data. */
+  app.get("/api/changes", (c) => {
+    const limit = Math.min(Number(c.req.query("limit") ?? "200") || 200, 1000);
+    const kind = c.req.query("kind");
+    const kinds = ["subscription", "provider", "token"] as const;
+    const filter = kinds.find((k) => k === kind);
+    return c.json({ changes: db.listChanges({ limit, ...(filter ? { kind: filter } : {}) }) });
+  });
+
   /** The saved overrides only — what the manage tab edits, without merged provider facts. */
   app.get("/api/subscriptions/config", (c) => {
     const path = subscriptionsPath();
@@ -407,6 +426,7 @@ export function buildApi(deps: ProviderRouteDeps & {
         return c.json({ error: `provider "${unknown[0] ?? ""}" is not configured` }, 404);
       }
       setSubscriptionOrder(providers, path);
+      recordChange("subscription", providers.join(", "), "reorder", { order: providers });
       return c.json({ ordered: providers.length, path });
     } catch (err) {
       return subscriptionWriteError(c, err);
@@ -427,6 +447,7 @@ export function buildApi(deps: ProviderRouteDeps & {
       appendSubscription(entry, path);
       const saved = loadSubscriptions(path).find((item) => item.provider === entry.provider);
       if (saved === undefined) return c.json({ error: "the saved entry did not appear in the file" }, 502);
+      recordChange("subscription", entry.provider, "add", { after: saved });
       return c.json({ entry: saved, path }, 201);
     } catch (err) {
       return subscriptionWriteError(c, err);
@@ -445,9 +466,11 @@ export function buildApi(deps: ProviderRouteDeps & {
       if (!loadSubscriptions(path).some((entry) => entry.provider === provider)) {
         return c.json({ error: `provider "${provider}" is not configured` }, 404);
       }
+      const before = loadSubscriptions(path).find((entry) => entry.provider === provider);
       updateSubscription(provider, changes, path);
       const saved = loadSubscriptions(path).find((entry) => entry.provider === provider);
       if (saved === undefined) return c.json({ error: "the saved entry did not appear in the file" }, 502);
+      recordChange("subscription", provider, "update", fieldChanges(before, saved));
       return c.json({ entry: saved, path });
     } catch (err) {
       return subscriptionWriteError(c, err);
@@ -464,6 +487,9 @@ export function buildApi(deps: ProviderRouteDeps & {
       const provider = decodeProvider(c.req.param("provider"));
       if (!loadSubscriptions(path).some((entry) => entry.provider === provider)) {
         return c.json({ error: `provider "${provider}" is not configured` }, 404);
+      }
+      if (loadSubscriptions(path).some((entry) => entry.provider === provider)) {
+        recordChange("subscription", provider, "delete", { before: loadSubscriptions(path).find((entry) => entry.provider === provider) ?? null });
       }
       removeSubscription(provider, path);
       return c.json({ removed: provider, path });
@@ -516,6 +542,22 @@ function readSubscriptions(db: Db, configPath: string, at: Date): SubscriptionVi
     return { rows: [], totals: [], configPath, error: message };
   }
 }
+
+/** Field-level before→after for the change log; a moved-to-null field reads as cleared. */
+function fieldChanges(
+  before: SubscriptionEntry | undefined,
+  after: SubscriptionEntry,
+): Record<string, unknown> {
+  const changed: Record<string, { before: unknown; after: unknown }> = {};
+  const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after)]);
+  for (const key of keys) {
+    const was = before?.[key as keyof SubscriptionEntry];
+    const now = after[key as keyof SubscriptionEntry];
+    if (JSON.stringify(was) !== JSON.stringify(now)) changed[key] = { before: was ?? null, after: now };
+  }
+  return { fields: changed };
+}
+
 
 /** A subscription route failure that already knows its HTTP status. */
 class SubscriptionRouteError extends Error {

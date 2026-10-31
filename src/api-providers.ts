@@ -50,6 +50,9 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
   const configPath = () => deps.configPath ?? (env.MODELIZER_CONFIG?.trim() || "modelizer.toml");
   const options = deps.secretOptions ?? {};
   const now = deps.now ?? (() => new Date());
+  /** One user-made change for the changelog; token rows carry status, never values. */
+  const record = (kind: "provider" | "token", target: string, action: string, detail?: Record<string, unknown>) =>
+    deps.db.addChange(now().toISOString(), kind, target, action, detail === undefined ? undefined : JSON.stringify(detail));
   app.get("/api/providers/manage", (c) => {
     try {
       const config = loadConfig(configPath());
@@ -79,6 +82,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       return c.json({ error: "enabled must be a boolean" }, 400);
     // The scheduler shares this process-local snapshot; no credential refresh or config write is needed.
     env.CLAUDE_OAUTH_USAGE = body.enabled ? "1" : "0";
+    record("provider", "claude", "oauth", { enabled: body.enabled });
     return c.json({ id: "claude", oauthUsageEnabled: body.enabled });
   });
 
@@ -91,6 +95,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     try {
       loadConfig(configPath());
       setProviderOrder(body.ids, configPath());
+      record("provider", body.ids.join(", "), "reorder", { order: body.ids });
       await deps.onProvidersChanged?.();
       return c.json({ ids: body.ids });
     } catch {
@@ -106,6 +111,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     try {
       loadConfig(configPath());
       setProviderEnabled(id, body.enabled, configPath());
+      record("provider", id, body.enabled ? "enable" : "disable", { enabled: body.enabled });
       await deps.onProvidersChanged?.();
       return c.json({ id, enabled: body.enabled });
     } catch {
@@ -120,6 +126,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       const config = loadConfig(configPath());
       setProviderEnabled(id, false, configPath());
       setProviderOrder((config.order ?? []).filter((saved) => saved !== id), configPath());
+      record("provider", id, "remove", { enabled: false });
       await deps.onProvidersChanged?.();
       return c.json({ id, enabled: false });
     } catch {
@@ -145,6 +152,8 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       else if (isObject(body) && typeof body.value === "string") writeSecret(name, body.value, options);
       refreshCredentials(env, options);
       const updated = credentialStatus(env, name);
+      // Status only — the submitted value never enters the change log.
+      record("token", `${id}/${name}`, method === "DELETE" ? "remove" : "set", { source: updated.source });
       return c.json({
         ...updated,
         ...(updated.shadowed ? { message: "shadowed by environment" } : {}),

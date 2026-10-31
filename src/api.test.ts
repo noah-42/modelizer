@@ -270,3 +270,27 @@ describe("API hardening", () => {
     expect(body.routes).toContain("subscriptions-config");
   });
 });
+
+describe("change log", () => {
+  test("every subscription mutation records one change with field-level before/after", async () => {
+    const app = appWith("");
+    await call(app, "POST", "/api/subscriptions", { provider: "cursor", price: 60 });
+    await call(app, "PUT", "/api/subscriptions/cursor", { price: 65 });
+    await call(app, "PUT", "/api/subscriptions/order", { providers: ["cursor"] });
+    await call(app, "DELETE", "/api/subscriptions/cursor");
+    const changes = ((await (await call(app, "GET", "/api/changes")).json()) as { changes: Array<{ kind: string; target: string; action: string; detail: string | null }> }).changes.slice(0, 4);
+    expect(changes.map((c) => c.action)).toEqual(["delete", "reorder", "update", "add"]);
+    expect(changes.every((c) => c.kind === "subscription" && c.target === "cursor")).toBe(true);
+    const update = JSON.parse(changes.find((c) => c.action === "update")!.detail!) as { fields: Record<string, { before: number; after: number }> };
+    expect(update.fields.price).toEqual({ before: 60, after: 65 });
+  });
+
+  test("change filter by kind and limit", async () => {
+    const app = appWith("");
+    await call(app, "POST", "/api/subscriptions", { provider: "zai" });
+    const all = (await (await call(app, "GET", "/api/changes?limit=1")).json()) as { changes: unknown[] };
+    expect(all.changes.length).toBe(1);
+    const none = (await (await call(app, "GET", "/api/changes?kind=token")).json()) as { changes: unknown[] };
+    expect(none.changes.length).toBe(0);
+  });
+});
