@@ -88,6 +88,12 @@ export interface Adapter {
   statusHints?(env: Record<string, string | undefined>): StatusNote[];
   /** Optional static pricing/token-value notes. */
   notes?: ProviderNote[];
+  /**
+   * True when collect does synchronous file scans or parses large local files (transcripts,
+   * session logs). The scheduler runs such collects on a worker thread so the HTTP event loop
+   * never stalls behind them. Adapters with fast, async collects leave this unset.
+   */
+  isolate?: boolean;
 }
 
 export class NormalizeError extends Error {}

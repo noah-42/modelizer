@@ -118,6 +118,46 @@ export class Scheduler {
     return this.clock().getTime();
   }
 
+  /** Lazily started collect worker; one thread serves every isolated adapter, jobs serialized. */
+  private collectWorker: Worker | null = null;
+  private readonly workerJobs = new Map<number, { resolve: (polls: RawPoll[]) => void; reject: (err: Error) => void }>();
+  private nextJobId = 1;
+
+  private ensureCollectWorker(): Worker {
+    if (this.collectWorker === null) {
+      const worker = new Worker(new URL("./collect-worker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (ev: MessageEvent) => {
+        const msg = ev.data as { id: number; log?: string; polls?: RawPoll[]; error?: string };
+        if (msg.log !== undefined) {
+          this.log(msg.log);
+          return;
+        }
+        const job = this.workerJobs.get(msg.id);
+        if (job === undefined) return;
+        this.workerJobs.delete(msg.id);
+        if (msg.error !== undefined) job.reject(new Error(msg.error));
+        else job.resolve(msg.polls ?? []);
+      };
+      worker.onerror = (ev: ErrorEvent) => {
+        const error = new Error(`collect worker crashed: ${ev.message}`);
+        for (const job of this.workerJobs.values()) job.reject(error);
+        this.workerJobs.clear();
+        this.collectWorker = null;
+      };
+      this.collectWorker = worker;
+    }
+    return this.collectWorker;
+  }
+
+  private collectInWorker(adapter: Adapter, capturedAt: string): Promise<RawPoll[]> {
+    const worker = this.ensureCollectWorker();
+    const jobId = this.nextJobId++;
+    return new Promise<RawPoll[]>((resolve, reject) => {
+      this.workerJobs.set(jobId, { resolve, reject });
+      worker.postMessage({ id: jobId, adapterId: adapter.id, env: { ...this.env }, at: capturedAt });
+    });
+  }
+
   isDue(id: string): boolean {
     return this.adapter(id) !== undefined && (this.nextDue.get(id) ?? 0) <= this.nowMs();
   }
@@ -151,12 +191,16 @@ export class Scheduler {
     }
 
     try {
-      const polls = await adapter.collect({
-        fetchFn: this.fetchFn,
-        env: this.env,
-        now: new Date(this.nowMs()),
-        log: this.log,
-      });
+      // Isolated adapters scan large local files synchronously; that work runs on the worker so
+      // the main thread's event loop keeps serving requests while it happens.
+      const polls = adapter.isolate === true
+        ? await this.collectInWorker(adapter, capturedAt)
+        : await adapter.collect({
+            fetchFn: this.fetchFn,
+            env: this.env,
+            now: new Date(this.nowMs()),
+            log: this.log,
+          });
       const failed = polls.find((p) => (p.status < 200 || p.status >= 300) && p.optional !== true);
       if (failed) throw new HttpPollError(failed);
       if (polls.length === 0) throw new Error("adapter collected nothing");

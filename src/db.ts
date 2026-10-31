@@ -189,6 +189,72 @@ CREATE TABLE IF NOT EXISTS changes (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_changes_at ON changes(at);
+
+-- Latest point per (provider, kind, label, model, day), maintained by insertPoints. The dashboard
+-- reads this on every overview request; computing it from usage_points (a 300k-row GROUP BY with
+-- COALESCE keys SQLite cannot index for) took seconds per hit.
+CREATE TABLE IF NOT EXISTS points_latest (
+  provider TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  model_key TEXT NOT NULL DEFAULT '',
+  day_key TEXT NOT NULL DEFAULT '',
+  model TEXT,
+  used REAL,
+  limit_value REAL,
+  remaining REAL,
+  unit TEXT NOT NULL,
+  window_start TEXT,
+  window_end TEXT,
+  reset_at TEXT,
+  day TEXT,
+  requests INTEGER,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  cost_usd REAL,
+  captured_at TEXT NOT NULL,
+  quota_window TEXT,
+  source TEXT,
+  stale INTEGER,
+  used_percent REAL,
+  PRIMARY KEY (provider, kind, label, model_key, day_key)
+);
+`;
+
+const UPSERT_LATEST = `
+INSERT INTO points_latest
+  (provider, kind, label, model_key, day_key, model, used, limit_value, remaining, unit,
+   window_start, window_end, reset_at, day, requests, tokens_in, tokens_out, cost_usd, captured_at,
+   quota_window, source, stale, used_percent)
+VALUES
+  ($provider, $kind, $label, $model_key, $day_key, $model, $used, $limit, $remaining, $unit,
+   $window_start, $window_end, $reset_at, $day, $requests, $tokens_in, $tokens_out, $cost_usd, $captured_at,
+   $quota_window, $source, $stale, $used_percent)
+ON CONFLICT(provider, kind, label, model_key, day_key) DO UPDATE SET
+  model = excluded.model, used = excluded.used, limit_value = excluded.limit_value,
+  remaining = excluded.remaining, unit = excluded.unit, window_start = excluded.window_start,
+  window_end = excluded.window_end, reset_at = excluded.reset_at, day = excluded.day,
+  requests = excluded.requests, tokens_in = excluded.tokens_in, tokens_out = excluded.tokens_out,
+  cost_usd = excluded.cost_usd, captured_at = excluded.captured_at, quota_window = excluded.quota_window,
+  source = excluded.source, stale = excluded.stale, used_percent = excluded.used_percent
+WHERE excluded.captured_at >= points_latest.captured_at
+`;
+
+const BACKFILL_LATEST = `
+INSERT INTO points_latest
+  (provider, kind, label, model_key, day_key, model, used, limit_value, remaining, unit,
+   window_start, window_end, reset_at, day, requests, tokens_in, tokens_out, cost_usd, captured_at,
+   quota_window, source, stale, used_percent)
+SELECT provider, kind, label, COALESCE(model, ''), COALESCE(day, ''), model, used, limit_value, remaining, unit,
+   window_start, window_end, reset_at, day, requests, tokens_in, tokens_out, cost_usd, captured_at,
+   quota_window, source, stale, used_percent
+FROM usage_points p
+WHERE captured_at = (
+  SELECT MAX(captured_at) FROM usage_points q
+  WHERE q.provider = p.provider AND q.kind = p.kind AND q.label = p.label
+    AND COALESCE(q.model, '') = COALESCE(p.model, '') AND COALESCE(q.day, '') = COALESCE(p.day, '')
+)
+ORDER BY captured_at
 `;
 
 const INSERT_POINT = `
@@ -213,18 +279,7 @@ ON CONFLICT(provider) DO UPDATE SET
   updated_at = $at
 `;
 
-const LATEST_POINTS = `
-SELECT p.* FROM usage_points p
-JOIN (
-  SELECT provider, kind, label, COALESCE(model, '') AS m, COALESCE(day, '') AS d, MAX(captured_at) AS max_at
-  FROM usage_points
-  GROUP BY provider, kind, label, m, d
-) latest
-  ON p.provider = latest.provider AND p.kind = latest.kind AND p.label = latest.label
-  AND COALESCE(p.model, '') = latest.m AND COALESCE(p.day, '') = latest.d
-  AND p.captured_at = latest.max_at
-ORDER BY p.provider, p.kind, p.label
-`;
+
 
 interface PointRow {
   provider: string;
@@ -316,15 +371,36 @@ function migrate(db: Database): void {
 export function openDb(path: string): Db {
   const db = new Database(path);
   db.exec("PRAGMA journal_mode = WAL;");
+  // A queued write waits instead of failing the poll with SQLITE_BUSY when another process
+  // (a CLI run, another process holding the database mid-write) waits on the lock instead of
+  // failing the poll with SQLITE_BUSY.
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   migrate(db);
+  // One-time backfill: the mirror starts empty on a database that predates it. The per-group
+  // MAX scan is slow (seconds on a large table) but runs exactly once.
+  const latestCount = (db.prepare("SELECT COUNT(*) AS n FROM points_latest").get() as { n: number }).n;
+  const pointCount = (db.prepare("SELECT COUNT(*) AS n FROM usage_points").get() as { n: number }).n;
+  if (latestCount === 0 && pointCount > 0) {
+    db.transaction(() => {
+      db.exec(BACKFILL_LATEST);
+    })();
+  }
 
   const insertPoint = db.prepare(INSERT_POINT);
+  const upsertLatest = db.prepare(UPSERT_LATEST);
   const insertRaw = db.prepare(
     "INSERT INTO raw_polls (provider, endpoint, url, status, body, captured_at) VALUES ($provider, $endpoint, $url, $status, $body, $captured_at)",
   );
   const insertPointsTx = db.transaction((points: UsagePoint[]) => {
-    for (const p of points) insertPoint.run(pointBindings(p));
+    for (const p of points) {
+      insertPoint.run(pointBindings(p));
+      upsertLatest.run({
+        ...pointBindings(p),
+        $model_key: p.model ?? "",
+        $day_key: p.day ?? "",
+      });
+    }
   });
   const insertRawTx = db.transaction((provider: string, polls: RawPoll[], capturedAt: string) => {
     for (const p of polls)
@@ -379,7 +455,9 @@ export function openDb(path: string): Db {
       return db.prepare("SELECT * FROM adapter_state").all() as AdapterStateRow[];
     },
     latestPoints() {
-      return (db.prepare(LATEST_POINTS).all() as PointRow[]).map(rowToPoint);
+      return (db.prepare("SELECT * FROM points_latest ORDER BY provider, kind, label").all() as PointRow[]).map(
+        rowToPoint,
+      );
     },
     pointsSince(provider, sinceIso) {
       return (

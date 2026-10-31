@@ -459,6 +459,7 @@ function summarize(
 export const claudeAdapter: Adapter = {
   id: "claude",
   stabilityTier: 3,
+  isolate: true,
   pollEveryMs: 5 * 60_000,
 
   isConfigured(env) {

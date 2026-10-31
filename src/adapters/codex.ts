@@ -337,6 +337,7 @@ function summarize(
 export const codexAdapter: Adapter = {
   id: "codex",
   stabilityTier: 3,
+  isolate: true,
   pollEveryMs: 5 * 60_000,
 
   isConfigured(env) {
