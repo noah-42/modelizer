@@ -247,7 +247,7 @@ function recordChange(
     };
   }
 
-  registerProviderRoutes(app, { ...deps, now });
+  registerProviderRoutes(app, { ...deps, now, fetchFn });
 
   app.get("/api/providers/:id/raw", (c) => {
     const id = c.req.param("id");

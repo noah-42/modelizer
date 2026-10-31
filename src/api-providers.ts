@@ -8,6 +8,7 @@ import {
   credentialStatus, KeychainError, refreshCredentials, removeSecret, SECRET_NAMES, writeSecret,
   type SecretName, type SecretOptions,
 } from "./secrets";
+import { validateSecretValue } from "./key-validation";
 
 export interface ProviderRouteDeps {
   db: Db;
@@ -16,6 +17,8 @@ export interface ProviderRouteDeps {
   envRef?: Record<string, string | undefined>;
   onProvidersChanged?: () => void | Promise<void>;
   secretOptions?: SecretOptions;
+  /** Injectable fetch for write-time credential validation; tests stub this to stay hermetic. */
+  fetchFn?: typeof fetch;
   configPath?: string;
   now?: () => Date;
 }
@@ -147,6 +150,12 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     const body: unknown = method === "DELETE" ? null : await c.req.json().catch(() => null);
     if (method !== "DELETE" && (!isObject(body) || typeof body.value !== "string" || body.value.trim() === ""))
       return c.json({ error: "A nonempty credential value is required" }, 400);
+    // MOD005: a credential is validated against its provider BEFORE it is stored — the
+    // manage tab must never write a malformed or dead key into the keychain again.
+    if (method !== "DELETE" && isObject(body) && typeof body.value === "string") {
+      const problem = await validateSecretValue(name, body.value, { env, fetchFn: deps.fetchFn });
+      if (problem) return c.json({ error: `Not stored — ${problem}` }, 422);
+    }
     try {
       if (method === "DELETE") removeSecret(name, options);
       else if (isObject(body) && typeof body.value === "string") writeSecret(name, body.value, options);

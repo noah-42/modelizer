@@ -33,6 +33,17 @@ body {
   gap: 10px;
   margin-bottom: 12px;
 }
+.header-portal {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+}
+.header-portal:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
 .header-logo {
   flex: none;
   border-radius: 6px;
@@ -833,7 +844,22 @@ code {
   padding: 8px 10px;
 }
 .manage-name {
-  min-width: 180px;
+  min-width: 140px;
+}
+.manage-provider-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: normal;
+}
+.manage-link {
+  margin-left: auto;
+  white-space: nowrap;
+  min-height: 36px;
+}
+.manage-provider-name .provider-icon {
+  width: 18px;
+  height: 18px;
 }
 .manage-actions {
   margin-left: auto;
@@ -843,6 +869,7 @@ code {
 }
 .manage-small {
   font-size: 12px;
+  white-space: nowrap;
   padding: 8px 12px;
   border-radius: 6px;
   border: 1px solid #d7dbe2;

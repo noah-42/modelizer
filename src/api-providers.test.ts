@@ -344,3 +344,33 @@ describe("provider management", () => {
     expect(h.changes()).toBe(0);
   });
 });
+
+describe("MOD005 write-time credential validation", () => {
+  test("a bracket-wrapped value is refused before the keychain is touched", async () => {
+    const h = appWith();
+    const res = await h.app.request(TOKEN_PATH, writeRequest("PUT", { value: "<new-key>" }));
+    expect(res.status).toBe(422);
+    expect((JSON.parse(await res.text()) as { error: string }).error).toContain("< or >");
+    expect(h.security.store.get("ZAI_API_KEY")).toBeUndefined();
+  });
+
+  test("a key the provider rejects (HTTP 401) is refused before the keychain is touched", async () => {
+    const root = mkdtempSync(join(tmpdir(), "modelizer-providers-"));
+    const path = join(root, "modelizer.toml");
+    writeFileSync(path, 'order = ["zai"]\n[server]\nport = 7788\n[providers.zai]\nenabled = true\n');
+    const db = openDb(join(root, "test.db"));
+    const security = fakeSecurity();
+    const secretOptions = { platform: "darwin", run: security.run } as const;
+    const app = buildApi({
+      db, adapters: [], env: {}, envRef: resolveEnv({}, secretOptions), configPath: path, secretOptions,
+      now: () => new Date(AT),
+      fetchFn: (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch,
+    });
+    const res = await app.request(TOKEN_PATH, writeRequest("PUT", { value: "deadkey" }));
+    expect(res.status).toBe(422);
+    expect((JSON.parse(await res.text()) as { error: string }).error).toContain("z.ai");
+    expect(security.store.get("ZAI_API_KEY")).toBeUndefined();
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+});

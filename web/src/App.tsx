@@ -3,8 +3,6 @@ import {
   peekCache,
   putCache,
   addModel,
-  addSubscription,
-  deleteSubscription,
   fetchAudit,
   fetchChanges,
   fetchDiary,
@@ -19,7 +17,6 @@ import {
   removeToken,
   reorderModels,
   reorderProviders,
-  reorderSubscriptions,
   setClaudeOAuthUsage,
   setProviderEnabled,
   setToken,
@@ -122,7 +119,7 @@ export function App() {
       </nav>
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
-      {tab === "manage" && <ManageView />}
+      {tab === "manage" && <ManageView goSubscriptions={() => setTab("subscriptions")} />}
       {tab === "changes" && <ChangesView />}
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
@@ -421,29 +418,12 @@ const HEALTH_LABELS: Record<string, string> = {
  * the dashboard's theme — the styling contract is scoped to `.manage-view` in styles.css.
  * Tokens are write-only here: the API never returns a value, and the inputs never prefill.
  */
-function ManageView() {
+function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [entries, setEntries] = useState<SavedSubscription[] | null>(() => peekCache<SavedSubscription[]>("subs-config"));
   const [providers, setProviders] = useState<ManageProvider[] | null>(() => peekCache<ManageProvider[]>("manage-providers"));
 
-  // Add-subscription form (provider is required before any request is sent).
-  const [newProvider, setNewProvider] = useState("");
-  const [newPlan, setNewPlan] = useState("");
-  const [newPrice, setNewPrice] = useState("");
-  const [newCurrency, setNewCurrency] = useState("USD");
-  const [newPeriod, setNewPeriod] = useState<"monthly" | "annual">("monthly");
-  const [newRenewsDay, setNewRenewsDay] = useState("");
-  const [adding, setAdding] = useState(false);
-
-  // Per-row edit form: one provider edited at a time; empty means "clear this field".
-  const [editing, setEditing] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState<{ plan: string; price: string; currency: string; renewsDay: string }>({
-    plan: "", price: "", currency: "", renewsDay: "",
-  });
-
-  // Two-click removal, per section, like ModelsView.
-  const [armedSub, setArmedSub] = useState<string | null>(null);
+  // Two-click removal, like ModelsView.
   const [armedProvider, setArmedProvider] = useState<string | null>(null);
 
   // Token form: one provider credential at a time; the value lives only in this input.
@@ -452,10 +432,8 @@ function ManageView() {
 
   const load = async () => {
     try {
-      const [config, manage] = await Promise.all([fetchSubscriptionConfig(), fetchManageProviders()]);
-      putCache("subs-config", config.entries);
+      const manage = await fetchManageProviders();
       putCache("manage-providers", manage.providers);
-      setEntries(config.entries);
       setProviders(manage.providers);
       setError(null);
     } catch (err) {
@@ -476,71 +454,6 @@ function ManageView() {
     } catch (err) {
       setError((err as Error).message);
     }
-  };
-
-  const addSubscriptionRow = async () => {
-    if (newProvider.trim() === "" || adding) return;
-    setAdding(true);
-    await run(async () => {
-      await addSubscription({
-        provider: newProvider.trim(),
-        ...(newPlan.trim() === "" ? {} : { plan: newPlan.trim() }),
-        ...(newPrice.trim() === "" ? {} : { price: Number(newPrice) }),
-        ...(newCurrency.trim() === "" ? {} : { currency: newCurrency.trim().toUpperCase() }),
-        period: newPeriod,
-        ...(newRenewsDay.trim() === "" ? {} : { renewsDay: Number(newRenewsDay) }),
-      });
-      setNewProvider("");
-      setNewPlan("");
-      setNewPrice("");
-      setNewCurrency("USD");
-      setNewPeriod("monthly");
-      setNewRenewsDay("");
-    }, `${newProvider.trim()} saved`);
-    setAdding(false);
-  };
-
-  const beginEdit = (entry: SavedSubscription) => {
-    setEditing(entry.provider);
-    setEditDraft({
-      plan: entry.plan ?? "",
-      price: entry.price === undefined ? "" : String(entry.price),
-      currency: entry.currency ?? "",
-      renewsDay: entry.renewsDay === undefined ? "" : String(entry.renewsDay),
-    });
-  };
-
-  const saveEdit = async (provider: string) => {
-    await run(async () => {
-      // Empty input means "clear the saved field": the API takes null as an explicit clear.
-      await updateSubscription(provider, {
-        ...(editDraft.plan === "" ? { plan: null } : { plan: editDraft.plan }),
-        ...(editDraft.price === "" ? { price: null } : { price: Number(editDraft.price) }),
-        ...(editDraft.currency === "" ? { currency: null } : { currency: editDraft.currency.toUpperCase() }),
-        ...(editDraft.renewsDay === "" ? { renewsDay: null } : { renewsDay: Number(editDraft.renewsDay) }),
-      } as Partial<SavedSubscription>);
-      setEditing(null);
-    }, `${provider} updated`);
-  };
-
-  const removeSub = async (provider: string) => {
-    if (armedSub !== provider) {
-      setArmedSub(provider);
-      return;
-    }
-    await run(async () => {
-      await deleteSubscription(provider);
-      setArmedSub(null);
-    }, `${provider} override removed (detected plans keep showing)`);
-  };
-
-  const moveSub = (from: number, step: -1 | 1) => {
-    const list = entries ?? [];
-    const to = from + step;
-    if (to < 0 || to >= list.length) return;
-    const ids = list.map((e) => e.provider);
-    [ids[from], ids[to]] = [ids[to], ids[from]];
-    void run(() => reorderSubscriptions(ids), "subscription order saved");
   };
 
   const toggleProvider = (id: string, enabled: boolean) =>
@@ -581,142 +494,13 @@ function ManageView() {
   return (
     <div className="manage-view">
       <div className="head-line">
-        <span className="muted">saved billing entries and provider integrations · changes apply live</span>
+        <span className="muted">provider integrations · changes apply live · subscriptions are managed on their own tab</span>
+        <button className="manage-small manage-link" onClick={goSubscriptions}>
+          manage subscriptions →
+        </button>
       </div>
       {error && <div className="banner error manage-banner">{error}</div>}
       {status && <div className="banner manage-banner">{status}</div>}
-
-      <section className="card manage-section">
-        <h2>Subscriptions</h2>
-        <p className="manage-hint">Your saved billing entries. Deleting removes only the saved note — a plan the provider reports keeps showing on the Subscriptions page.</p>
-        <div className="manage-add">
-          <input
-            className="manage-input"
-            type="text"
-            placeholder="provider (required)"
-            value={newProvider}
-            onChange={(e) => setNewProvider(e.target.value)}
-            aria-label="provider id"
-          />
-          <input
-            className="manage-input"
-            type="text"
-            placeholder="plan"
-            value={newPlan}
-            onChange={(e) => setNewPlan(e.target.value)}
-            aria-label="plan name"
-          />
-          <input
-            className="manage-input manage-price"
-            type="number"
-            min="0"
-            step="0.01"
-            placeholder="price"
-            value={newPrice}
-            onChange={(e) => setNewPrice(e.target.value)}
-            aria-label="price per period"
-          />
-          <input
-            className="manage-input manage-currency"
-            type="text"
-            maxLength={3}
-            placeholder="USD"
-            value={newCurrency}
-            onChange={(e) => setNewCurrency(e.target.value)}
-            aria-label="currency code"
-          />
-          <select
-            className="manage-input"
-            value={newPeriod}
-            onChange={(e) => setNewPeriod(e.target.value as "monthly" | "annual")}
-            aria-label="billing period"
-          >
-            <option value="monthly">monthly</option>
-            <option value="annual">annual</option>
-          </select>
-          <input
-            className="manage-input manage-day"
-            type="number"
-            min="1"
-            max="31"
-            placeholder="day"
-            value={newRenewsDay}
-            onChange={(e) => setNewRenewsDay(e.target.value)}
-            aria-label="renewal day of month"
-          />
-          <button className="add-btn" onClick={() => void addSubscriptionRow()} disabled={adding || newProvider.trim() === ""}>
-            {adding ? "saving…" : "add"}
-          </button>
-        </div>
-        <div className="manage-list">
-          {(entries ?? []).map((entry, i) => (
-            <div key={entry.provider} className="manage-row">
-              {editing === entry.provider ? (
-                <>
-                  <strong className="manage-name">{providerName(entry.provider)}</strong>
-                  <input
-                    className="manage-input"
-                    type="text"
-                    placeholder="plan"
-                    value={editDraft.plan}
-                    onChange={(e) => setEditDraft({ ...editDraft, plan: e.target.value })}
-                    aria-label={`plan for ${entry.provider}`}
-                  />
-                  <input
-                    className="manage-input manage-price"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    placeholder="price"
-                    value={editDraft.price}
-                    onChange={(e) => setEditDraft({ ...editDraft, price: e.target.value })}
-                    aria-label={`price for ${entry.provider}`}
-                  />
-                  <input
-                    className="manage-input manage-currency"
-                    type="text"
-                    maxLength={3}
-                    placeholder="currency"
-                    value={editDraft.currency}
-                    onChange={(e) => setEditDraft({ ...editDraft, currency: e.target.value })}
-                    aria-label={`currency for ${entry.provider}`}
-                  />
-                  <input
-                    className="manage-input manage-day"
-                    type="number"
-                    min="1"
-                    max="31"
-                    placeholder="day"
-                    value={editDraft.renewsDay}
-                    onChange={(e) => setEditDraft({ ...editDraft, renewsDay: e.target.value })}
-                    aria-label={`renewal day for ${entry.provider}`}
-                  />
-                  <button className="add-btn" onClick={() => void saveEdit(entry.provider)}>save</button>
-                  <button className="manage-small" onClick={() => setEditing(null)}>cancel</button>
-                </>
-              ) : (
-                <>
-                  <strong className="manage-name">{providerName(entry.provider)}</strong>
-                  <span className="muted">
-                    {[entry.plan, entry.price === undefined ? null : `${entry.price} ${(entry.currency ?? "USD").toUpperCase()}/${entry.period ?? "monthly"}`, entry.renewsDay === undefined ? null : `day ${entry.renewsDay}`]
-                      .filter((v) => v !== null && v !== undefined)
-                      .join(" · ") || "no details saved"}
-                  </span>
-                  <span className="manage-actions">
-                    <button className="manage-small" onClick={() => moveSub(i, -1)} disabled={i === 0} aria-label={`move ${entry.provider} up`}>↑</button>
-                    <button className="manage-small" onClick={() => moveSub(i, 1)} disabled={i === (entries?.length ?? 0) - 1} aria-label={`move ${entry.provider} down`}>↓</button>
-                    <button className="manage-small" onClick={() => beginEdit(entry)}>edit</button>
-                    <button className="manage-small manage-danger" onClick={() => void removeSub(entry.provider)}>
-                      {armedSub === entry.provider ? "confirm remove" : "remove"}
-                    </button>
-                  </span>
-                </>
-              )}
-            </div>
-          ))}
-          {entries !== null && entries.length === 0 && <div className="banner">No saved entries — add one above.</div>}
-        </div>
-      </section>
 
       <section className="card manage-section">
         <h2>Providers</h2>
@@ -725,7 +509,10 @@ function ManageView() {
           {(providers ?? []).map((p, i) => (
             <div key={p.id} className="manage-row manage-provider">
               <div className="manage-provider-head">
-                <strong className="manage-name">{providerName(p.id)}</strong>
+                <span className="manage-name manage-provider-name">
+                  <ProviderIcon id={p.id} />
+                  {providerName(p.id)}
+                </span>
                 <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
                 <span className="manage-auth">{p.authMethod}</span>
                 <label className="manage-toggle">
@@ -776,7 +563,7 @@ function ManageView() {
                       <input
                         type="password"
                         className="manage-input"
-                        placeholder="paste value — never shown again"
+                        placeholder="paste value — validated, never shown again"
                         value={tokenValue}
                         onChange={(e) => setTokenValue(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && void submitToken()}
