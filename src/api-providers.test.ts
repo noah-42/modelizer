@@ -175,7 +175,7 @@ describe("provider management", () => {
     const originalDb = observationSnapshot(h.db.raw);
     const commands = [...h.security.commands];
     const seen: Array<string | undefined> = [];
-    const adapter = { ...claudeAdapter, collect: async (ctx: Parameters<typeof claudeAdapter.collect>[0]) => {
+    const adapter = { ...claudeAdapter, isolate: false, collect: async (ctx: Parameters<typeof claudeAdapter.collect>[0]) => {
       seen.push(ctx.env.CLAUDE_OAUTH_USAGE);
       return [];
     }, normalize: () => [] };
