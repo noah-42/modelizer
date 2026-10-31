@@ -468,3 +468,40 @@ describe("scheduler subscription facts", () => {
     h.db.close();
   });
 });
+
+describe("scheduler auth failures", () => {
+  test("an authFailure verdict is stored as an `auth:`-prefixed error and backs off", async () => {
+    const adapter = fakeAdapter({
+      authFailure: () => "FAKE_KEY rejected — generate a new key",
+    });
+    const h = harness([adapter]);
+    try {
+      const [outcome] = await h.scheduler.tick();
+      expect(outcome?.ok).toBe(false);
+      expect(outcome?.error).toStartWith("auth: ");
+      const state = h.db.getAdapterState("fake");
+      expect(state?.last_error).toStartWith("auth: ");
+      expect(state?.consecutive_failures).toBe(1);
+      // backoff still applies — a dead key must not be hammered
+      expect(h.scheduler.isDue("fake")).toBe(false);
+    } finally {
+      h.db.close();
+    }
+  });
+
+  test("no authFailure verdict leaves the error unprefixed", async () => {
+    const adapter = fakeAdapter({
+      collect: async () => {
+        throw new Error("no usable data");
+      },
+    });
+    const h = harness([adapter]);
+    try {
+      const [outcome] = await h.scheduler.tick();
+      expect(outcome?.error).toBe("no usable data");
+      expect(h.db.getAdapterState("fake")?.last_error).toBe("no usable data");
+    } finally {
+      h.db.close();
+    }
+  });
+});

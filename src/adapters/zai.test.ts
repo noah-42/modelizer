@@ -232,3 +232,30 @@ describe("zai liveStatus (peak = weekdays 06:00–10:00 UTC)", () => {
     expect(s("2026-10-12T10:00:00Z").state).toContain("off-peak");
   });
 });
+
+describe("zai authFailure", () => {
+  const REAL_REJECT = { code: 1000, msg: "Authentication Failed", success: false }; // observed 2026-10-31
+  const KNOWN_QUIRK = { code: 500, msg: "404 NOT_FOUND", success: false }; // healthy coding-plan keys see this
+
+  test("body code 1000 / Authentication Failed names the key and the fix", () => {
+    const reason = zaiAdapter.authFailure?.([poll("quota-limit", REAL_REJECT)]);
+    expect(reason).toContain("ZAI_API_KEY rejected");
+    expect(reason).toContain("code 1000");
+    expect(reason).toContain("keychain");
+  });
+
+  test("HTTP 401/403 on a monitored endpoint is an auth failure", () => {
+    expect(zaiAdapter.authFailure?.([poll("quota-limit", {}, 401)])).toContain("HTTP 401");
+    expect(zaiAdapter.authFailure?.([poll("model-usage", {}, 403)])).toContain("HTTP 403");
+  });
+
+  test("the coding-usage 500 quirk is NOT an auth failure", () => {
+    expect(zaiAdapter.authFailure?.([poll("coding-usage", KNOWN_QUIRK)])).toBeNull();
+  });
+
+  test("healthy polls and unrelated errors are null", () => {
+    expect(zaiAdapter.authFailure?.([poll("quota-limit", QUOTA_PERCENTAGE_ONLY)])).toBeNull();
+    expect(zaiAdapter.authFailure?.([poll("quota-limit", { code: 500, msg: "boom" })])).toBeNull();
+    expect(zaiAdapter.authFailure?.([poll("balance", {}, 404)])).toBeNull();
+  });
+});

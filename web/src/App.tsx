@@ -109,6 +109,9 @@ export function App() {
       <header className="header">
         <img className="header-logo" src="/modelizer-icon.svg" alt="" width={26} height={26} />
         <h1>modelizer</h1>
+        <a className="header-portal" href="http://127.0.0.1:5001/apps">
+          Local apps
+        </a>
       </header>
       <nav className="tabs">
         {(["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary"] as const).map((t) => (
@@ -1515,8 +1518,10 @@ function fmtClock(iso: string): string {
 
 function statusOf(p: OverviewProvider): { label: string; className: string } {
   if (!p.configured) return { label: "not configured", className: "badge muted-badge" };
-  if (p.consecutiveFailures > 0 && p.lastError)
+  if (p.consecutiveFailures > 0 && p.lastError) {
+    if (p.lastError.startsWith("auth:")) return { label: "auth failed", className: "badge bad" };
     return { label: `failing ×${p.consecutiveFailures}`, className: "badge bad" };
+  }
   if (p.stale) return { label: "stale", className: "badge warn" };
   return { label: "ok", className: "badge good" };
 }
@@ -1714,8 +1719,14 @@ function ProviderCard({
             </div>
           ))}
           {p.lastError && (
-            <p className="card-error" title={`at ${p.lastErrorAt ?? "?"}`}>
-              {p.lastError}
+            <p
+              className="card-error"
+              title={`at ${p.lastErrorAt ?? "?"}`}
+              style={p.lastError.startsWith("auth:") ? { fontWeight: 600 } : undefined}
+            >
+              {p.lastError.startsWith("auth:")
+                ? `🔑 ${p.lastError.slice("auth:".length).trim()}`
+                : p.lastError}
             </p>
           )}
           {p.points.length === 0 ? (

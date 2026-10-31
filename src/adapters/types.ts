@@ -74,6 +74,13 @@ export interface Adapter {
   isConfigured(env: Record<string, string | undefined>): boolean;
   missingCredentials(env: Record<string, string | undefined>): string[];
   collect(ctx: CollectContext): Promise<RawPoll[]>;
+  /**
+   * Optional credential-rejection detector, called by the scheduler after collect and before
+   * normalize. Pure. Returns a human-readable reason when the polls show the provider rejecting
+   * the stored key (the fix is human action, not retries), else null. The scheduler turns a
+   * non-null result into an AuthError stored as `auth: <reason>` so the UI can badge it.
+   */
+  authFailure?(polls: RawPoll[]): string | null;
   /** Pure mapping from successful polls to points; throws on unexpected shapes so drift is loud. */
   normalize(polls: RawPoll[], capturedAt: string): UsagePoint[];
   /** Optional clock-derived status, evaluated fresh on every overview request. */
@@ -97,6 +104,9 @@ export interface Adapter {
 }
 
 export class NormalizeError extends Error {}
+
+/** The provider rejected the stored credentials — retrying cannot fix this; the key must be replaced. */
+export class AuthError extends Error {}
 
 /** GET a JSON endpoint and archive status/headers/body verbatim. Never throws on HTTP status. */
 export async function fetchPoll(

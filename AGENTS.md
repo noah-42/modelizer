@@ -35,7 +35,7 @@ scripts/              mocks and the Claude StopFailure hook
 
 | Task | Location |
 |---|---|
-| Adapter contract | `src/adapters/types.ts` |
+| Adapter contract | `src/adapters/types.ts` (incl. `authFailure` — a rejected key must surface as `auth: <reason>` in `last_error`, which the UI badges as `auth failed`; never let it collapse into a generic normalize error) |
 | Register a provider | `src/adapters/<id>.ts` and `src/adapters/index.ts` |
 | Overview windows | `src/windows.ts`, `src/api.ts` |
 | Codex rate limits | `src/adapters/codex-app-server.ts`, `codex-limits.ts`, `codex.ts` |

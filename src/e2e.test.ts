@@ -331,3 +331,34 @@ describe("end to end", () => {
     db.close();
   });
 });
+
+describe("auth failure surfacing", () => {
+  test("a rejected key reaches /api/overview as an auth:-prefixed lastError", async () => {
+    const db = openDb(dbPath);
+    const rejecting = {
+      ...zaiAdapter,
+      collect: async () => [
+        {
+          endpoint: "quota-limit",
+          url: "https://x/quota-limit",
+          status: 200,
+          body: JSON.stringify({ code: 1000, msg: "Authentication Failed", success: false }),
+          json: { code: 1000, msg: "Authentication Failed", success: false },
+          headers: {},
+        },
+      ],
+    };
+    const scheduler = new Scheduler({ adapters: [rejecting], db, env: { ZAI_API_KEY: "test-key" } });
+    const outcome = await scheduler.runProvider("zai");
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toStartWith("auth: ");
+
+    const app = buildApi({ db, adapters: [rejecting], env: { ZAI_API_KEY: "test-key" }, now: () => new Date() });
+    const res = await app.request("/api/overview");
+    const overview = (await res.json()) as { providers: Array<{ id: string; lastError: string | null; consecutiveFailures: number }> };
+    const zai = overview.providers.find((p) => p.id === "zai");
+    expect(zai?.lastError).toStartWith("auth: ");
+    expect(zai?.consecutiveFailures).toBe(1);
+    db.close();
+  });
+});

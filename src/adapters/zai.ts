@@ -49,6 +49,24 @@ export const zaiAdapter: Adapter = {
     return env.ZAI_API_KEY ? [] : ["ZAI_API_KEY"];
   },
 
+  authFailure(polls) {
+    // Z.AI rejects a dead key with HTTP 200 + body {code:1000, msg:"Authentication Failed"} on
+    // the monitor endpoints (and plain 401/403 elsewhere). coding-usage's known quirk
+    // ({code:500,"404 NOT_FOUND"}) is NOT an auth rejection — coding-plan keys see it when healthy.
+    for (const p of polls) {
+      if (p.endpoint !== "quota-limit" && p.endpoint !== "coding-usage" && p.endpoint !== "model-usage") continue;
+      if (p.status === 401 || p.status === 403) {
+        return `ZAI_API_KEY rejected by api.z.ai (HTTP ${p.status}) — generate a new key and update it (keychain: modelizer / ZAI_API_KEY)`;
+      }
+      const code = (p.json as { code?: unknown } | null)?.code;
+      const msg = typeof (p.json as { msg?: unknown } | null)?.msg === "string" ? (p.json as { msg: string }).msg : "";
+      if (code === 1000 || /authentication failed/i.test(msg)) {
+        return `ZAI_API_KEY rejected by api.z.ai (code ${String(code)} ${msg}) — generate a new key and update it (keychain: modelizer / ZAI_API_KEY)`;
+      }
+    }
+    return null;
+  },
+
   liveStatus(now: Date): StatusNote[] {
     const t = now.getTime();
     if (t < PROMO_ALL_DAY_OFFPEAK_END) {

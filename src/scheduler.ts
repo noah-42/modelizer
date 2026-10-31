@@ -1,4 +1,5 @@
 import type { Adapter, RawPoll, UsagePoint } from "./adapters/types";
+import { AuthError } from "./adapters/types";
 import type { AuditLevel, Db } from "./db";
 import { ADAPTERS_BY_ID } from "./adapters";
 import { refreshCredentials } from "./secrets";
@@ -204,6 +205,10 @@ export class Scheduler {
       const failed = polls.find((p) => (p.status < 200 || p.status >= 300) && p.optional !== true);
       if (failed) throw new HttpPollError(failed);
       if (polls.length === 0) throw new Error("adapter collected nothing");
+      // Credential rejection is checked before normalize: a dead key must surface as `auth:`,
+      // not as the adapter's generic "no usable data".
+      const auth = adapter.authFailure?.(polls) ?? null;
+      if (auth) throw new AuthError(auth);
       const skipped: string[] = [];
       for (const p of polls) {
         if (p.status < 200 || p.status >= 300) {
@@ -237,7 +242,14 @@ export class Scheduler {
       );
       return { provider: id, ok: true, points, nextDueInMs: waitMs };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const isAuth = err instanceof AuthError;
+      // Auth failures get an `auth:` prefix so the UI can badge them: the fix is a new key,
+      // not a retry, so the message must name the key and point at the fix.
+      const error = isAuth
+        ? `auth: ${(err as Error).message}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
       const failures = (this.db.getAdapterState(id)?.consecutive_failures ?? 0) + 1;
       const backoff = Math.min(adapter.pollEveryMs * 2 ** failures, this.maxBackoffMs);
       const retryAfter = err instanceof HttpPollError ? err.retryAfterMs : null;
@@ -245,7 +257,13 @@ export class Scheduler {
       this.db.updateAdapterState(id, { ok: false, error, at: capturedAt });
       this.nextDue.set(id, this.nowMs() + waitMs);
       this.log(`${id}: FAILED (${error}); backing off ${Math.round(waitMs / 1000)}s`);
-      this.emitAudit(capturedAt, id, "error", "poll failed", `${error}; backing off ${Math.round(waitMs / 1000)}s`);
+      this.emitAudit(
+        capturedAt,
+        id,
+        "error",
+        isAuth ? "auth failed — stored key rejected" : "poll failed",
+        `${error}; backing off ${Math.round(waitMs / 1000)}s`,
+      );
       return { provider: id, ok: false, points: [], error, nextDueInMs: waitMs };
     }
   }
