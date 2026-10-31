@@ -902,6 +902,65 @@ function ModelTable({ rows, suffix }: { rows: ModelRow[]; suffix: string }) {
   );
 }
 
+interface QuotaWindowListProps {
+  readonly providerName: string;
+  readonly windows: readonly UsagePoint[];
+  readonly tick: number;
+}
+
+interface QuotaRefreshProps {
+  readonly window: UsagePoint;
+  readonly tick: number;
+}
+
+/** Displays an authoritative reset, or explains why the provider has none. */
+function QuotaRefresh({ window, tick }: QuotaRefreshProps) {
+  if (window.reset_at === null) {
+    return (
+      <span className="quota-window-value">
+        {windowIsIdle(window) ? "Idle — no reset to wait for" : "Refresh time not reported by the provider"}
+      </span>
+    );
+  }
+
+  const resetAt = window.reset_at;
+  const remaining = countdown(resetAt, tick);
+  if (remaining === "now") {
+    return <span className="quota-window-value">Reset time passed · reported {fmtLocalClock(resetAt)}</span>;
+  }
+
+  return (
+    <span className="quota-reset-timing">
+      <span>in</span>
+      <strong className="quota-countdown">{remaining}</strong>
+      <span>at {fmtLocalClock(resetAt)}</span>
+    </span>
+  );
+}
+
+/** Renders authoritative quota usage beside each provider-reported reset time. */
+function QuotaWindowList({ providerName, windows, tick }: QuotaWindowListProps) {
+  if (windows.length === 0) return null;
+  return (
+    <ul className="quota-windows" aria-label={`${providerName} quota windows`}>
+      {windows.map((w) => (
+        <li key={w.label} className="quota-window" title={w.reset_at ?? undefined}>
+          <div className="quota-window-usage">
+            <span className="quota-window-label">{friendlyLabel(w.label)}</span>
+            <span className="quota-window-value">
+              {quotaUsageText(w).trim().replace(/ ·$/, "") || "Usage not reported"}
+            </span>
+          </div>
+          <div className="quota-window-reset">
+          <span className="quota-window-label">next refresh</span>
+            <QuotaRefresh window={w} tick={tick} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /**
  * One provider's card. Collapsed it keeps the quota windows that decide whether you can keep
  * working — the five-hour window and, when the provider has one, the weekly budget — and folds
@@ -966,27 +1025,7 @@ function ProviderCard({
         </div>
       )}
 
-      {gateWindows.map((w) => (
-        <div key={w.label} className="window-reset" title={w.reset_at ?? undefined}>
-          <span className="status-dot" />
-          <span>
-            {friendlyLabel(w.label)}{" "}
-            {quotaUsageText(w)}
-            {w.reset_at === null ? (
-              <span className="muted">
-                {windowIsIdle(w)
-                  ? "idle — nothing used, no reset to wait for"
-                  : "refresh time not reported by the provider"}
-              </span>
-            ) : (
-              <>
-                refreshes in <span className="countdown">{countdown(w.reset_at, tick)}</span> · at{" "}
-                {fmtLocalClock(w.reset_at)}
-              </>
-            )}
-          </span>
-        </div>
-      ))}
+      <QuotaWindowList providerName={providerName(p.id)} windows={gateWindows} tick={tick} />
 
       {open && (
         <div id={`card-body-${p.id}`} className="card-body">
