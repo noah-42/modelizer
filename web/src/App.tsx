@@ -1632,6 +1632,18 @@ interface QuotaRefreshProps {
 /** Displays an authoritative reset, or explains why the provider has none. */
 function QuotaRefresh({ window, tick }: QuotaRefreshProps) {
   if (window.reset_at === null) {
+    if (window.stale === true) {
+      // A stale window's usage is a snapshot, not a live reading — name the snapshot date
+      // instead of letting old data read as current truth (seen on Codex session-log fallbacks).
+      const day = shortDay(window.captured_at);
+      return (
+        <span className="quota-window-value">
+          {day === null
+            ? "Snapshot — provider refresh not reported"
+            : `Snapshot from ${day} — provider refresh not reported`}
+        </span>
+      );
+    }
     return (
       <span className="quota-window-value">
         {windowIsIdle(window) ? "Idle — no reset to wait for" : "Refresh time not reported by the provider"}
@@ -1844,8 +1856,7 @@ function windowIsIdle(point: UsagePoint): boolean {
   return point.used === 0;
 }
 
-/** Renders quota usage as "XX% left / XX% used" (the used part muted); other units keep the old shape. */
-function quotaUsage(point: UsagePoint): React.ReactNode {
+/** Renders quota usage as "XX% left / XX% used" (the used part muted); other units keep the old shape. */function quotaUsage(point: UsagePoint): React.ReactNode {
   const estimate = point.source?.match(/^freellmapi-catalog-estimate:(.+)$/)?.[1];
   if (estimate !== undefined) {
     const used = point.used ?? 0;
@@ -1975,6 +1986,13 @@ function countdown(iso: string, _tick: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86_400)}d`;
+}
+
+/** Short capture date for snapshot lines, e.g. "Oct 30"; null when the timestamp is unusable. */
+function shortDay(iso: string): string | null {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 // Precise ticking countdown for the banner: "2h 13m", "4m 09s", "28d 3h".
