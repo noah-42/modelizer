@@ -2,6 +2,9 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
+import type { SecurityRunner } from "../secrets";
 import type { SubscriptionFacts, SubscriptionState } from "../subscriptions";
 import { fetchPoll } from "./types";
 import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from "./types";
@@ -66,6 +69,57 @@ export function cursorStatePath(env: Record<string, string | undefined>): string
 /** Cursor's at-rest encryption envelope (observed 2026-10-31): token is ciphertext, not a bearer. */
 export const CURSOR_ENCRYPTED_TOKEN_PREFIX = "cursor-safe-storage:";
 
+/**
+ * Cursor wraps the Chromium os_crypt envelope: `cursor-safe-storage:v1:` plus base64 of the
+ * macOS blob (`v10`/`v11` header, AES-128-CBC, PKCS7). The wrapping key is PBKDF2-SHA1 of the
+ * `Cursor Safe Storage` keychain password over Chromium's fixed salt — the same derivation the
+ * app itself performs, so no Cursor state is written and the keychain read is read-only.
+ * Verified live 2026-11-02: the decrypted token answers both api2.cursor.sh poll endpoints.
+ */
+export const CURSOR_SAFE_STORAGE_SERVICE = "Cursor Safe Storage";
+export const CURSOR_SAFE_STORAGE_ACCOUNT = "Cursor Key";
+const CHROMIUM_SALT = "saltysalt";
+const CHROMIUM_ITERATIONS = 1003;
+const CHROMIUM_KEY_BYTES = 16;
+const CHROMIUM_IV = Buffer.alloc(16, 0x20);
+
+/** Decrypt a `cursor-safe-storage:v1:` envelope; null when the shape, password or padding is wrong. */
+export function decryptCursorToken(envelope: string, safeStoragePassword: string): string | null {
+  const match = /^cursor-safe-storage:v1:([A-Za-z0-9+/=]+)$/.exec(envelope.trim());
+  if (match === null) return null;
+  let blob: Buffer;
+  try {
+    blob = Buffer.from(match[1] ?? "", "base64");
+  } catch {
+    return null;
+  }
+  // The inner blob begins with a version tag ("v10" today); a wrong password usually fails the
+  // PKCS7 final() step, and a lucky decrypt still cannot look like a token.
+  if (blob.length < 19 || !/^v1[0-9]/.test(blob.toString("latin1"))) return null;
+  const key = crypto.pbkdf2Sync(safeStoragePassword, CHROMIUM_SALT, CHROMIUM_ITERATIONS, CHROMIUM_KEY_BYTES, "sha1");
+  try {
+    const decipher = crypto.createDecipheriv("aes-128-cbc", key, CHROMIUM_IV);
+    const plain = Buffer.concat([decipher.update(blob.subarray(3)), decipher.final()]);
+    const token = plain.toString("utf8");
+    // A bearer token is printable ASCII and long; anything else is a failed decrypt.
+    return token.length >= 20 && /^[\x21-\x7e]+$/.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Cursor Safe Storage keychain password, or null when the item is absent. Value never logged. */
+export function readCursorSafeStoragePassword(run: SecurityRunner = defaultSecurityRun): string | null {
+  const res = run(["find-generic-password", "-s", CURSOR_SAFE_STORAGE_SERVICE, "-a", CURSOR_SAFE_STORAGE_ACCOUNT, "-w"]);
+  const value = res.status === 0 ? res.stdout.replace(/\n$/, "") : "";
+  return value === "" ? null : value;
+}
+
+function defaultSecurityRun(args: string[]): { status: number | null; stdout: string } {
+  const res = spawnSync("security", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  return { status: res.status, stdout: res.stdout ?? "" };
+}
+
 /** Raw stored value, whatever its envelope; null when the key is absent or blank. */
 function readCursorStoredToken(statePath: string): string | null {
   if (!existsSync(statePath)) return null;
@@ -99,6 +153,19 @@ export function readCursorAccessToken(statePath: string): string | null {
 export function cursorTokenIsEncrypted(statePath: string): boolean {
   const raw = readCursorStoredToken(statePath);
   return raw !== null && raw.startsWith(CURSOR_ENCRYPTED_TOKEN_PREFIX);
+}
+
+/**
+ * The usable bearer: the raw token when Cursor stored plaintext, otherwise the decrypted
+ * envelope (the app's own key derivation, read-only keychain). Null when nothing works —
+ * the caller decides between "not signed in" and "encrypted but undecryptable".
+ */
+export function usableCursorToken(statePath: string): string | null {
+  const raw = readCursorStoredToken(statePath);
+  if (raw === null) return null;
+  if (!raw.startsWith(CURSOR_ENCRYPTED_TOKEN_PREFIX)) return raw;
+  const password = readCursorSafeStoragePassword();
+  return password === null ? null : decryptCursorToken(raw, password);
 }
 
 /** Plan facts from `full_stripe_profile`; null when Cursor reports no paid plan. */
@@ -251,22 +318,22 @@ export const cursorAdapter: Adapter = {
     },
     {
       title: "Where the token comes from",
-      text: "The access token is read read-only from Cursor's own state database (state.vscdb, key cursorAuth/accessToken) — the same source CodexBar uses. It is sent only to api2.cursor.sh, never logged, and never written back; signing out of Cursor therefore stops the poll.",
+      text: "The access token is read read-only from Cursor's own state database (state.vscdb, key cursorAuth/accessToken) — the same source CodexBar uses. Since Cursor encrypts it at rest, modelizer unwraps the envelope with the Cursor Safe Storage keychain item (the app's own derivation; nothing is written back). The token is sent only to api2.cursor.sh, never logged; signing out of Cursor therefore stops the poll.",
     },
   ] satisfies ProviderNote[],
 
   async collect(ctx: CollectContext) {
     const statePath = cursorStatePath(ctx.env);
     const envKey = ctx.env.CURSOR_API_KEY?.trim() ?? "";
-    if (envKey === "" && cursorTokenIsEncrypted(statePath)) {
+    if (envKey === "" && cursorTokenIsEncrypted(statePath) && usableCursorToken(statePath) === null) {
       // Sending the envelope earns a bare 401 and makes the card look broken; name the real
-      // state instead. Cursor's public API keys (Agent/Admin) do not expose the personal
-      // usage meter, so there is no supported key path for individual plans today.
+      // state instead. Decryption normally works (Cursor Safe Storage keychain item); failing
+      // that, Cursor's public API keys do not expose the personal usage meter either.
       throw new Error(
-        "Cursor stores its access token encrypted at rest (cursor-safe-storage envelope, observed 2026-10-31) — modelizer cannot read it, so usage polling is paused. Cursor's public API keys (Agent/Admin) do not expose the personal usage meter; plan and billing still come from subscriptions.toml.",
+        "Cursor stores its access token encrypted at rest (cursor-safe-storage envelope) and it could not be decrypted — the Cursor Safe Storage keychain item is missing or does not match, so usage polling is paused. Sign out and back in to Cursor, or set CURSOR_API_KEY; plan and billing still come from subscriptions.toml.",
       );
     }
-    const token = envKey !== "" ? envKey : readCursorAccessToken(statePath);
+    const token = envKey !== "" ? envKey : usableCursorToken(statePath);
     if (token === null) return [tokenMissingPoll(statePath)];
     return Promise.all([
       pollWithToken(ctx, CURSOR_PROFILE_ENDPOINT, CURSOR_PROFILE_URL, token, { method: "GET" }),

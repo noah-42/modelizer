@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfig, DEFAULT_CONFIG, setProviderEnabled, setProviderOrder } from "./config";
+import { ADAPTERS } from "./adapters";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ describe("loadConfig", () => {
     expect(cfg.server.port).toBe(DEFAULT_CONFIG.server.port);
     expect(cfg.server.bind).toBe("127.0.0.1");
     expect(cfg.providers).toEqual({});
-    expect(cfg.order).toEqual(["zai", "claude", "cursor", "codex", "openrouter", "freellmapi", "moonshot"]);
+    expect(cfg.order).toEqual(ADAPTERS.map((adapter) => adapter.id));
   });
 
   test("enable and disable update only the selected provider setting", () => {

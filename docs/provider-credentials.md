@@ -22,10 +22,13 @@ durable record; the conversation that produced it is not a reference.
 
 - Cursor encrypts its local access token at rest: `state.vscdb` value is wrapped in a
   `cursor-safe-storage:` envelope (observed 2026-10-31, `cursor.storage.authTokenEncryptionAtRest = true`).
-  The app keeps its session in memory and does not rewrite a readable token, so the old
-  read-plaintext-token adapter path is dead. Modelizer detects the envelope
-  (`cursorTokenIsEncrypted`) and pauses Cursor usage polling with a named error instead of
-  sending ciphertext.
+  **Resolved 2026-11-02:** the envelope is Chromium os_crypt (`v1:` + base64 of the `v10` AES-128-CBC blob);
+  the wrapping key is PBKDF2-SHA1 of the login keychain's `Cursor Safe Storage` / `Cursor Key` password
+  over the fixed salt `saltysalt` (1003 iterations, 16 bytes, IV 16×0x20). The cursor adapter decrypts
+  this at poll time (`decryptCursorToken` in `src/adapters/cursor.ts`) — read-only keychain read, nothing
+  written back, token never logged. Verified live the same day: both api2.cursor.sh poll endpoints answer
+  200 with the decrypted bearer. If the keychain item is missing or rotated, the card pauses with a named
+  error instead of sending ciphertext.
 - The owner's X Subscription unifies Grok + Cursor into one workspace and one weekly included
   pool, managed at grok.com/dashboard.
 - Dashboard API keys (`grok_…` prefix, from grok.com/dashboard/api-keys) are **workspace

@@ -10,6 +10,8 @@ import {
   cursorPeriodPoint,
   readCursorAccessToken,
   cursorTokenIsEncrypted,
+  decryptCursorToken,
+  readCursorSafeStoragePassword,
 } from "./cursor";
 import type { RawPoll } from "./types";
 
@@ -73,6 +75,49 @@ describe("cursorFactsFromProfile", () => {
       planId: "ultra_plus",
       planName: null,
     });
+  });
+});
+
+/** Re-implements the app-side wrap so decrypt tests do not need real Cursor state. */
+function encryptLikeCursor(token: string, safeStoragePassword: string): string {
+  const crypto = require("node:crypto") as typeof import("node:crypto");
+  const key = crypto.pbkdf2Sync(safeStoragePassword, "saltysalt", 1003, 16, "sha1");
+  const cipher = crypto.createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+  const blob = Buffer.concat([Buffer.from("v10", "latin1"), cipher.update(Buffer.from(token, "utf8")), cipher.final()]);
+  return `cursor-safe-storage:v1:${blob.toString("base64")}`;
+}
+
+describe("decryptCursorToken", () => {
+  const password = "cursor-safe-storage-test-password";
+
+  test("round-trips the Chromium os_crypt envelope", () => {
+    const token = "eyJhbGciOiJIUzI1NiJ9.part.three-of-a-jwt-bearer";
+    expect(decryptCursorToken(encryptLikeCursor(token, password), password)).toBe(token);
+  });
+
+  test("rejects a wrong password instead of returning garbage", () => {
+    const envelope = encryptLikeCursor("eyJhbGciOiJIUzI1NiJ9.part.three", password);
+    expect(decryptCursorToken(envelope, "different-password")).toBeNull();
+  });
+
+  test("rejects values that are not a v1 envelope", () => {
+    expect(decryptCursorToken("cursor-safe-storage:AAABBB", password)).toBeNull();
+    expect(decryptCursorToken("plaintext-bearer", password)).toBeNull();
+    expect(decryptCursorToken("cursor-safe-storage:v1:!!!!not-base64!!!!", password)).toBeNull();
+  });
+
+  test("rejects a blob whose plaintext does not look like a token", () => {
+    // Valid CBC padding but decrypts to a short control-character string.
+    const crypto = require("node:crypto") as typeof import("node:crypto");
+    const key = crypto.pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1");
+    const cipher = crypto.createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+    const blob = Buffer.concat([Buffer.from("v10", "latin1"), cipher.update(Buffer.from("\u0001\u0002", "utf8")), cipher.final()]);
+    expect(decryptCursorToken(`cursor-safe-storage:v1:${blob.toString("base64")}`, password)).toBeNull();
+  });
+
+  test("reads the safe-storage password through the injected runner", () => {
+    expect(readCursorSafeStoragePassword(() => ({ status: 0, stdout: "pw\n" }))).toBe("pw");
+    expect(readCursorSafeStoragePassword(() => ({ status: 44, stdout: "" }))).toBeNull();
   });
 });
 
