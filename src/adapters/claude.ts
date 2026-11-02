@@ -464,13 +464,24 @@ export const claudeAdapter: Adapter = {
 
   isConfigured(env) {
     try {
-      return existsSync(projectsDir(env));
+      if (existsSync(projectsDir(env))) return true;
     } catch {
       return false;
     }
+    // OAuth-only mode (e.g. a machine that never ran Claude Code locally):
+    // no transcripts, but the account-wide percentages still work when the
+    // opt-in flag is set and a Claude Code login token is reachable.
+    if (env.CLAUDE_OAUTH_USAGE === "1") {
+      return readOAuthCredentials(env, { nowMs: Date.now() }).source !== "none";
+    }
+    return false;
   },
   missingCredentials(env) {
-    return this.isConfigured(env) ? [] : ["~/.claude/projects (run Claude Code once, or set CLAUDE_PROJECTS_DIR)"];
+    if (this.isConfigured(env)) return [];
+    if (env.CLAUDE_OAUTH_USAGE === "1") {
+      return ["no Claude Code login token (keychain 'Claude Code-credentials' or ~/.claude/.credentials.json)"];
+    }
+    return ["~/.claude/projects (run Claude Code once, or set CLAUDE_PROJECTS_DIR)"];
   },
 
   notes: [

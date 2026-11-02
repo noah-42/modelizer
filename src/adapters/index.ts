@@ -6,9 +6,10 @@ import { openRouterAdapter } from "./openrouter";
 import { freellmapiAdapter } from "./freellmapi";
 import { zaiAdapter } from "./zai";
 import { moonshotAdapter } from "./moonshot";
+import { xaiAdapter } from "./xai";
 
 /** Registry of every adapter compiled into the binary; grows one file per provider.
  *  Array order = dashboard display order (zai first per user preference). */
-export const ADAPTERS: Adapter[] = [zaiAdapter, claudeAdapter, cursorAdapter, codexAdapter, openRouterAdapter, freellmapiAdapter, moonshotAdapter];
+export const ADAPTERS: Adapter[] = [zaiAdapter, claudeAdapter, cursorAdapter, codexAdapter, openRouterAdapter, freellmapiAdapter, moonshotAdapter, xaiAdapter];
 
 export const ADAPTERS_BY_ID: ReadonlyMap<string, Adapter> = new Map(ADAPTERS.map((a) => [a.id, a]));
