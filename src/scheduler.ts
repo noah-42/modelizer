@@ -159,6 +159,12 @@ export class Scheduler {
     });
   }
 
+  /** Stop the lazily started collect worker so a one-shot process can exit; polls already in flight are abandoned. */
+  dispose(): void {
+    this.collectWorker?.terminate();
+    this.collectWorker = null;
+  }
+
   isDue(id: string): boolean {
     return this.adapter(id) !== undefined && (this.nextDue.get(id) ?? 0) <= this.nowMs();
   }

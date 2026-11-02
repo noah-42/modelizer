@@ -62,8 +62,12 @@ for (const adapter of targets) {
   }
 }
 await scheduler.notifyDue();
+scheduler.dispose();
 db.endSession(sessionId, new Date().toISOString());
 db.close();
+// The codex collect worker and the app-server child can leave handles open after the work is
+// done; a one-shot poll exits explicitly instead of hanging on them.
+process.exit(0);
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
