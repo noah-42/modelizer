@@ -1,9 +1,13 @@
 # Modelizer plans
 
-- **ID scheme:** `MOD` (first three letters of `modelizer`, uppercase); next ID: `MOD004` in `.plan_counter`.
+- **ID scheme:** `MOD` (first three letters of `modelizer`, uppercase); next ID: see `plans/.plan_counter` (allocated through planning helper).
 - **Filename convention:** `YYYY-MM-mmm-DD_<PlanID>_<slug>.md`; the date is the plan's creation date.
 
 ## Active and proposed
+
+[proposed] MOD057 2026-10-oct-31 manage-add-provider-flow — Manage add flow: + icon, typed provider id, key field; registry-backed; replaces disabled-provider chip list.
+
+[proposed] MOD056 2026-10-oct-31 manage-page-design — Manage page redesigned around a stated job-to-be-done; currently in design interview, decisions landing in the plan file.
 
 ## Archived
 

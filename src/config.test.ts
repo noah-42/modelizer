@@ -24,6 +24,21 @@ describe("loadConfig", () => {
     expect(loadConfig(path).providers.zai?.enabled).toBe(true);
   });
 
+  test("toggling a provider whose header carries an inline comment updates it in place", () => {
+    const dir = mkdtempSync(join(tmpdir(), "modelizer-cfg-"));
+    const path = join(dir, "modelizer.toml");
+    // The shipped config annotates headers; a plain-match miss used to APPEND a duplicate
+    // [providers.openrouter] table, which makes the TOML unparseable ("already defined").
+    const original = `[providers.openrouter] # keys: OPENROUTER_API_KEY\nenabled = true\n\n[providers.zai]\nenabled = true\n`;
+    writeFileSync(path, original);
+
+    setProviderEnabled("openrouter", false, path);
+    expect(readFileSync(path, "utf8")).toBe(original.replace("enabled = true", "enabled = false"));
+    expect(() => loadConfig(path)).not.toThrow();
+    expect(loadConfig(path).providers.openrouter?.enabled).toBe(false);
+    expect(readFileSync(path, "utf8")).not.toContain("# keys: OPENROUTER_API_KEY\nenabled = false\n\n[providers.openrouter]");
+  });
+
   test("provider order persists and loads in the saved sequence", () => {
     const dir = mkdtempSync(join(tmpdir(), "modelizer-cfg-"));
     const path = join(dir, "modelizer.toml");

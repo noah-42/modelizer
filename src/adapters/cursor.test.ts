@@ -9,6 +9,7 @@ import {
   cursorStatePath,
   cursorPeriodPoint,
   readCursorAccessToken,
+  cursorTokenIsEncrypted,
 } from "./cursor";
 import type { RawPoll } from "./types";
 
@@ -95,6 +96,19 @@ describe("readCursorAccessToken", () => {
     db2.close();
     expect(readCursorAccessToken(empty)).toBeNull();
   });
+
+  test("treats the cursor-safe-storage envelope as unreadable, not as a bearer", () => {
+    const path = join(root, "encrypted.vscdb");
+    const db = new Database(path);
+    db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)");
+    db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+      "cursorAuth/accessToken",
+      "cursor-safe-storage:AAABBB",
+    );
+    db.close();
+    expect(readCursorAccessToken(path)).toBeNull();
+    expect(cursorTokenIsEncrypted(path)).toBe(true);
+  });
 });
 
 describe("cursorAdapter", () => {
@@ -118,6 +132,15 @@ describe("cursorAdapter", () => {
       reset_at: new Date(1792850479604).toISOString(),
       source: "cursor-api",
     });
+  });
+
+  test("401/403 from Cursor is an auth failure naming the sign-in fix", () => {
+    const reason = cursorAdapter.authFailure?.([poll(period, 401, "period-usage")]);
+    expect(reason).toContain("rejected the stored access token");
+    expect(reason).toContain("Sign out and back in");
+    expect(cursorAdapter.authFailure?.([poll(profile, 403, "stripe-profile")])).toContain("HTTP 403");
+    expect(cursorAdapter.authFailure?.([poll(profile, 200, "stripe-profile")])).toBeNull();
+    expect(cursorAdapter.authFailure?.([poll(period, 200, "period-usage")])).toBeNull();
   });
 
   test("leaves room in the period rather than a negative remainder", () => {

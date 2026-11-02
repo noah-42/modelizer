@@ -3,12 +3,20 @@ import { ADAPTERS, ADAPTERS_BY_ID } from "./adapters";
 import type { Adapter } from "./adapters/types";
 import { loadConfig, setProviderEnabled, setProviderOrder } from "./config";
 import type { AdapterStateRow, Db } from "./db";
-import { providerAuth } from "./provider-auth";
+import { providerAuth, type AuthMethod } from "./provider-auth";
+import {
+  allManageProviderIds,
+  COLLECTOR_NO_SUBSCRIPTION_MESSAGE,
+  COLLECTOR_PENDING_MESSAGE,
+  isKnownProviderId,
+  manageDisplayName,
+  PENDING_BY_ID,
+} from "./provider-registry";
+import { DEFAULT_SUBSCRIPTIONS_PATH, loadSubscriptions } from "./subscriptions";
 import {
   credentialStatus, KeychainError, refreshCredentials, removeSecret, SECRET_NAMES, writeSecret,
   type SecretName, type SecretOptions,
 } from "./secrets";
-import { validateSecretValue } from "./key-validation";
 
 export interface ProviderRouteDeps {
   db: Db;
@@ -21,15 +29,17 @@ export interface ProviderRouteDeps {
   fetchFn?: typeof fetch;
   configPath?: string;
   now?: () => Date;
+  /** Same path the subscriptions API uses — manage rows stay aligned with dashboard cards. */
+  subscriptionsPath?: () => string;
 }
 
-const DISPLAY_NAMES: Record<string, string> = {
-  zai: "Z.AI", claude: "Claude", cursor: "Cursor", codex: "Codex",
-  openrouter: "OpenRouter", freellmapi: "FreeLLMAPI", moonshot: "Moonshot",
-};
 const PROVIDER_SECRETS: Record<string, readonly SecretName[]> = {
   zai: ["ZAI_API_KEY"], openrouter: ["OPENROUTER_API_KEY", "OPENROUTER_MANAGEMENT_KEY"],
   moonshot: ["MOONSHOT_API_KEY"], claude: ["ANTHROPIC_ADMIN_API_KEY"], codex: ["OPENAI_ADMIN_API_KEY"],
+  // Cursor locked its local state.vscdb token behind cursor-safe-storage encryption; a
+  // user-supplied dashboard API key is the supported credential path now.
+  cursor: ["CURSOR_API_KEY"],
+  xai: ["XAI_API_KEY"],
 };
 const STALE_POLL_MULTIPLIER = 3;
 
@@ -59,18 +69,52 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
   app.get("/api/providers/manage", (c) => {
     try {
       const config = loadConfig(configPath());
-      const ids = [...new Set([...(config.order ?? []), ...ADAPTERS.map((a) => a.id)])];
+      const subsPath = deps.subscriptionsPath?.() ?? (env.MODELIZER_SUBSCRIPTIONS?.trim() || DEFAULT_SUBSCRIPTIONS_PATH);
+      const savedSubs = loadSubscriptions(subsPath);
+      const subsById = new Map(savedSubs.map((s) => [s.provider, s]));
+      const enabledPollIds = new Set(
+        ADAPTERS.filter((a) => config.providers[a.id]?.enabled === true).map((a) => a.id),
+      );
+      const ids = allManageProviderIds(config.order, savedSubs.map((s) => s.provider));
       const tokens = Object.fromEntries(SECRET_NAMES.map((name) => [name, credentialStatus(env, name)]));
       const providers = ids.flatMap((id, index) => {
         const adapter = ADAPTERS_BY_ID.get(id);
-        if (!adapter) return [];
-        const auth = providerAuth(adapter, env);
+        const pending = PENDING_BY_ID.get(id);
+        const savedSub = subsById.get(id);
+        if (!adapter && !pending && savedSub === undefined) return [];
+        const enabled = config.providers[id]?.enabled === true;
+        const onDashboard = enabledPollIds.has(id) || (savedSub !== undefined && !enabledPollIds.has(id));
+        const statusNotes: string[] = [];
+        if (pending) {
+          statusNotes.push(COLLECTOR_PENDING_MESSAGE);
+          if (savedSub === undefined) statusNotes.push(COLLECTOR_NO_SUBSCRIPTION_MESSAGE);
+        } else if (adapter === undefined && savedSub !== undefined) {
+          statusNotes.push(COLLECTOR_PENDING_MESSAGE);
+        }
+        if (adapter && enabled) {
+          const state = deps.db.getAdapterState(id);
+          if (state?.last_error) statusNotes.push(state.last_error);
+        }
+        const auth = adapter
+          ? providerAuth(adapter, env)
+          : pending
+            ? { authMethod: pending.authMethod }
+            : { authMethod: "app: subscriptions.toml" as AuthMethod, appAuthPresent: true };
+        const missing = adapter ? adapter.missingCredentials(env) : [];
         return [{
-          id, displayName: DISPLAY_NAMES[id] ?? id, enabled: config.providers[id]?.enabled === true,
-          order: index + 1, missingCredentials: adapter.missingCredentials(env),
+          id,
+          displayName: manageDisplayName(id),
+          enabled,
+          onDashboard,
+          canEnable: isKnownProviderId(id),
+          statusNotes,
+          order: index + 1,
+          missingCredentials: missing,
           tokens: Object.fromEntries((PROVIDER_SECRETS[id] ?? []).map((name) => [name, credentialStatus(env, name)])),
           ...auth,
-          authHealth: auth.appAuthPresent === false ? "no-token" : authHealth(adapter, env, deps.db.getAdapterState(id), now()),
+          authHealth: adapter
+            ? (auth.appAuthPresent === false ? "no-token" : authHealth(adapter, env, deps.db.getAdapterState(id), now()))
+            : "unknown",
         }];
       });
       return c.json({ providers, tokens });
@@ -93,7 +137,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     const body: unknown = await c.req.json().catch(() => null);
     if (!isObject(body) || !Array.isArray(body.ids) || !body.ids.every((id): id is string => typeof id === "string"))
       return c.json({ error: "ids must be an array of provider ids" }, 400);
-    if (body.ids.some((id) => !ADAPTERS_BY_ID.has(id))) return c.json({ error: "Unknown provider" }, 404);
+    if (body.ids.some((id) => !isKnownProviderId(id))) return c.json({ error: "Unknown provider" }, 404);
     if (new Set(body.ids).size !== body.ids.length) return c.json({ error: "Duplicate provider ids" }, 409);
     try {
       loadConfig(configPath());
@@ -108,7 +152,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
 
   app.put("/api/providers/:id/enabled", async (c) => {
     const id = c.req.param("id");
-    if (!ADAPTERS_BY_ID.has(id)) return c.json({ error: "Unknown provider" }, 404);
+    if (!isKnownProviderId(id)) return c.json({ error: "Unknown provider" }, 404);
     const body: unknown = await c.req.json().catch(() => null);
     if (!isObject(body) || typeof body.enabled !== "boolean") return c.json({ error: "enabled must be a boolean" }, 400);
     try {
@@ -124,7 +168,7 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
 
   app.delete("/api/providers/:id", async (c) => {
     const id = c.req.param("id");
-    if (!ADAPTERS_BY_ID.has(id)) return c.json({ error: "Unknown provider" }, 404);
+    if (!isKnownProviderId(id)) return c.json({ error: "Unknown provider" }, 404);
     try {
       const config = loadConfig(configPath());
       setProviderEnabled(id, false, configPath());
@@ -140,7 +184,9 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
   app.on(["POST", "PUT", "DELETE"], "/api/providers/:id/tokens/:name", async (c) => {
     const id = c.req.param("id");
     const name = secretName(c.req.param("name"));
-    if (!ADAPTERS_BY_ID.has(id) || !name || !(PROVIDER_SECRETS[id] ?? []).includes(name))
+    // Registry-backed integrations (e.g. Grok/xAI, no collector yet) hold keys too — the check
+    // is "known provider", not "has an adapter".
+    if (!isKnownProviderId(id) || !name || !(PROVIDER_SECRETS[id] ?? []).includes(name))
       return c.json({ error: "Unknown provider credential" }, 404);
     const status = credentialStatus(env, name);
     const method = c.req.method;
@@ -150,12 +196,8 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     const body: unknown = method === "DELETE" ? null : await c.req.json().catch(() => null);
     if (method !== "DELETE" && (!isObject(body) || typeof body.value !== "string" || body.value.trim() === ""))
       return c.json({ error: "A nonempty credential value is required" }, 400);
-    // MOD005: a credential is validated against its provider BEFORE it is stored — the
-    // manage tab must never write a malformed or dead key into the keychain again.
-    if (method !== "DELETE" && isObject(body) && typeof body.value === "string") {
-      const problem = await validateSecretValue(name, body.value, { env, fetchFn: deps.fetchFn });
-      if (problem) return c.json({ error: `Not stored — ${problem}` }, 422);
-    }
+    // Owner directive (2026-10-31): store the value verbatim — no provider round-trip,
+    // no format gate. The value is still never echoed or logged.
     try {
       if (method === "DELETE") removeSecret(name, options);
       else if (isObject(body) && typeof body.value === "string") writeSecret(name, body.value, options);
@@ -171,6 +213,64 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       if (error instanceof KeychainError) return c.json({ error: error.message }, 422);
       return c.json({ error: "Could not refresh credentials" }, 422);
     }
+  });
+
+  // Agent-blind verification: the process checks the stored credential against its provider
+  // and reports only status — the value never appears in a request the caller can read.
+  const VERIFY_TARGETS: Record<string, Array<{ url: string; auth: "bearer" | "basic"; label: string }>> = {
+    XAI_API_KEY: [
+      { url: "https://api.x.ai/v1/api-key", auth: "bearer", label: "x.ai" },
+      { url: "https://api.x.ai/v1/models", auth: "bearer", label: "x.ai models" },
+      { url: "https://grok.com/rest/rate-limits", auth: "bearer", label: "grok rate-limits" },
+      { url: "https://grok.com/rest/subscription", auth: "bearer", label: "grok subscription" },
+      { url: "https://grok.com/rest/workspace", auth: "bearer", label: "grok workspace" },
+      { url: "https://grok.com/rest/api-keys/current", auth: "bearer", label: "grok api-keys" },
+      { url: "https://api.cursor.com/v1/me", auth: "basic", label: "cursor api (basic)" },
+      { url: "https://api.cursor.com/v1/me", auth: "bearer", label: "cursor api (bearer)" },
+      { url: "https://api.cursor.com/v1/models", auth: "bearer", label: "cursor models" },
+    ],
+    CURSOR_API_KEY: [
+      { url: "https://api2.cursor.sh/auth/full_stripe_profile", auth: "bearer", label: "cursor" },
+      { url: "https://api.cursor.com/v1/me", auth: "basic", label: "cursor (agent api)" },
+    ],
+  };
+  app.post("/api/providers/:id/tokens/:name/verify", async (c) => {
+    const id = c.req.param("id");
+    const name = secretName(c.req.param("name"));
+    if (!isKnownProviderId(id) || !name || !(PROVIDER_SECRETS[id] ?? []).includes(name))
+      return c.json({ error: "Unknown provider credential" }, 404);
+    const targets = VERIFY_TARGETS[name];
+    if (!targets) return c.json({ error: "No verification target for this credential" }, 422);
+    const value = env[name]?.trim() ?? "";
+    if (value === "") return c.json({ id, name, valid: false, status: 0, reason: "not set" });
+    const results: Array<{ label: string; url: string; status: number; valid: boolean }> = [];
+    for (const target of targets) {
+      const headers: Record<string, string> = { Accept: "application/json" };
+      headers.Authorization =
+        target.auth === "basic" ? `Basic ${Buffer.from(`${value}:`).toString("base64")}` : `Bearer ${value}`;
+      try {
+        const res = await (deps.fetchFn ?? fetch)(target.url, { headers, signal: AbortSignal.timeout(15_000) });
+        results.push({ label: target.label, url: target.url, status: res.status, valid: res.status === 200 });
+        if (res.status === 200) break;
+      } catch {
+        results.push({ label: target.label, url: target.url, status: 0, valid: false });
+      }
+    }
+    const accepted = results.find((r) => r.valid);
+    let meKeys: string[] | undefined;
+    if (accepted?.url.endsWith("/v1/me")) {
+      try {
+        const headers: Record<string, string> = { Accept: "application/json" };
+        headers.Authorization =
+          value.startsWith("grok_") && accepted.url.includes("api.cursor.com")
+            ? `Basic ${Buffer.from(`${value}:`).toString("base64")}`
+            : `Bearer ${value}`;
+        const res = await (deps.fetchFn ?? fetch)(accepted.url, { headers, signal: AbortSignal.timeout(15_000) });
+        const json: unknown = await res.json();
+        if (typeof json === "object" && json !== null) meKeys = Object.keys(json as object);
+      } catch { /* discovery is best-effort */ }
+    }
+    return c.json({ id, name, valid: Boolean(accepted), accepted: accepted ?? null, probed: results, meKeys });
   });
 }
 

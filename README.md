@@ -156,7 +156,7 @@ usage points; its card points at the Subscriptions tab.
 |---|---|---|
 | Dashboard | Monitor — read-only, live status | shows what providers report; fix things on manage |
 | Subscriptions | Your plans, merged (provider facts + your overrides) | every card is editable in place; edits are recorded on the changelog |
-| Manage | Write — the only page that mutates config | providers and their tokens only (providers first, icons, non-bold names); subscriptions are edited on the Subscriptions page; token values are validated against the provider before storage (MOD005) |
+| Manage | Write — the only page that mutates config | providers and their tokens only (providers first, icons, non-bold names); subscriptions are edited on the Subscriptions page; token values are stored verbatim (owner directive 2026-10-31; validation removed) |
 | Changes | The record — every user-made change, newest first | subscriptions and provider/token changes with field-level before→after |
 | Audit | Machine record — polls, errors, and events | the changelog is the human view of the user-made subset |
 | Diary | Usage history over time | read-only |

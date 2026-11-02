@@ -394,6 +394,12 @@ export interface ManageProvider {
   appAuthPresent?: boolean;
   oauthUsageEnabled?: boolean;
   authHealth: "no-token" | "rejected" | "quota" | "ok" | "unknown";
+  /** True when this id currently has a dashboard card (polled integration or plan-only subscription). */
+  onDashboard?: boolean;
+  /** False for subscription-only rows that cannot be toggled in modelizer.toml yet. */
+  canEnable?: boolean;
+  /** Human-readable collector / configuration gaps — shown as the flashing error icon on Manage. */
+  statusNotes?: string[];
 }
 
 export interface ManageProvidersResponse {

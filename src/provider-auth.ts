@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { authJsonPath } from "./adapters/codex";
 import type { Adapter } from "./adapters/types";
 
-export type AuthMethod = "api-key" | `app: ${string}` | "oauth";
+export type AuthMethod = "api-key" | `app: ${string}` | "oauth" | "TBD";
 type Env = Record<string, string | undefined>;
 
 interface AuthDescriptor {

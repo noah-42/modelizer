@@ -126,16 +126,29 @@ describe("provider management", () => {
   test("the listing describes every adapter using its actual authentication source", async () => {
     const h = appWith();
     const data = await listing(h);
-    expect(Object.fromEntries(data.providers.map((provider) => [provider.id, provider.authMethod]))).toEqual({
+    const methods = Object.fromEntries(data.providers.map((provider) => [provider.id, provider.authMethod]));
+    expect(methods).toMatchObject({
       zai: "api-key", openrouter: "api-key", moonshot: "api-key",
       claude: "app: Claude Code login", codex: "app: ChatGPT login", cursor: "app: Cursor login",
       freellmapi: "app: FreeLLMAPI local ledger",
+      freebuff: "TBD",
+      opencode: "TBD",
     });
     for (const id of ["zai", "openrouter", "moonshot"]) {
       expect(row(data, id).appAuthPresent).toBeUndefined();
       expect(row(data, id).oauthUsageEnabled).toBeUndefined();
     }
     expect(row(data, "claude").oauthUsageEnabled).toBe(false);
+  });
+
+  test("disabled integrations appear in the manage listing and can be enabled", async () => {
+    const h = appWith();
+    const data = await listing(h);
+    expect(row(data, "freebuff")).toMatchObject({ displayName: "Free Buff", enabled: false, authHealth: "unknown" });
+    expect(row(data, "opencode").displayName).toBe("Open Code");
+    expect(row(data, "moonshot").displayName).toBe("Kimi (Moonshot)");
+    await safeBody(await h.app.request("/api/providers/freebuff/enabled", writeRequest("PUT", { enabled: true })));
+    expect(row(await listing(h), "freebuff").enabled).toBe(true);
   });
 
   test("absent app sources report no token even when historical polls succeeded", async () => {
@@ -345,32 +358,18 @@ describe("provider management", () => {
   });
 });
 
-describe("MOD005 write-time credential validation", () => {
-  test("a bracket-wrapped value is refused before the keychain is touched", async () => {
+describe("credential storage is verbatim (owner directive 2026-10-31)", () => {
+  test("any nonempty value is stored as-is — no provider check, no format gate", async () => {
     const h = appWith();
-    const res = await h.app.request(TOKEN_PATH, writeRequest("PUT", { value: "<new-key>" }));
-    expect(res.status).toBe(422);
-    expect((JSON.parse(await res.text()) as { error: string }).error).toContain("< or >");
-    expect(h.security.store.get("ZAI_API_KEY")).toBeUndefined();
+    const res = await h.app.request(TOKEN_PATH, writeRequest("PUT", { value: "<new-key not a real key>" }));
+    expect(res.status).toBe(200);
+    expect(h.security.store.get("ZAI_API_KEY")).toBe("<new-key not a real key>");
   });
 
-  test("a key the provider rejects (HTTP 401) is refused before the keychain is touched", async () => {
-    const root = mkdtempSync(join(tmpdir(), "modelizer-providers-"));
-    const path = join(root, "modelizer.toml");
-    writeFileSync(path, 'order = ["zai"]\n[server]\nport = 7788\n[providers.zai]\nenabled = true\n');
-    const db = openDb(join(root, "test.db"));
-    const security = fakeSecurity();
-    const secretOptions = { platform: "darwin", run: security.run } as const;
-    const app = buildApi({
-      db, adapters: [], env: {}, envRef: resolveEnv({}, secretOptions), configPath: path, secretOptions,
-      now: () => new Date(AT),
-      fetchFn: (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch,
-    });
-    const res = await app.request(TOKEN_PATH, writeRequest("PUT", { value: "deadkey" }));
-    expect(res.status).toBe(422);
-    expect((JSON.parse(await res.text()) as { error: string }).error).toContain("z.ai");
-    expect(security.store.get("ZAI_API_KEY")).toBeUndefined();
-    db.close();
-    rmSync(root, { recursive: true, force: true });
+  test("a registry-backed integration without an adapter can store its key", async () => {
+    const h = appWith();
+    const res = await h.app.request("/api/providers/xai/tokens/XAI_API_KEY", writeRequest("PUT", { value: "xai-key" }));
+    expect(res.status).toBe(200);
+    expect(h.security.store.get("XAI_API_KEY")).toBe("xai-key");
   });
 });

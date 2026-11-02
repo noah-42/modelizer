@@ -1,6 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { parse } from "smol-toml";
 import { ADAPTERS } from "./adapters";
+import { isKnownProviderId } from "./provider-registry";
 
 export interface ProviderConfig {
   enabled: boolean;
@@ -98,9 +99,8 @@ export function setProviderOrder(ids: string[], path = DEFAULT_CONFIG_PATH): voi
 }
 
 function validateProviderIds(ids: string[], path: string): void {
-  const known = new Set(ADAPTERS.map((adapter) => adapter.id));
   for (const id of ids) {
-    if (!known.has(id)) throw new Error(`${path}: unknown provider "${id}"`);
+    if (!isKnownProviderId(id)) throw new Error(`${path}: unknown provider "${id}"`);
   }
 }
 
@@ -124,7 +124,10 @@ function findProviderSection(lines: string[], header: string): {
   end: number;
   body: string[];
 } | null {
-  const start = lines.findIndex((line) => line.trim() === header);
+  // The real config annotates headers ("[providers.openrouter] # keys: …"), so the match must
+  // survive inline comments; without it a toggle appends a duplicate table and breaks the file.
+  const pattern = new RegExp(`^\\s*${header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\s|#|$)`);
+  const start = lines.findIndex((line) => pattern.test(line));
   if (start < 0) return null;
   const end = lines.findIndex((line, index) => index > start && /^\s*\[/.test(line));
   const sectionEnd = end < 0 ? lines.length : end;

@@ -185,6 +185,18 @@ function recordChange(
         state === undefined ||
         state.last_success === null ||
         now().getTime() - Date.parse(state.last_success) > 3 * pollEveryMs;
+      // Dead data must not pose as current: once polling has demonstrably failed past the
+      // staleness horizon AND the failure postdates the capture, the last usage point stops
+      // rendering. The error and the subscription row stay; the ghost percentage goes.
+      const errorPostdatesCapture =
+        stale === true &&
+        state?.last_error_at != null &&
+        latest.some(
+          (p) => p.provider === a.id && Date.parse(state.last_error_at!) > Date.parse(p.captured_at),
+        );
+      const ownPoints = latest.filter(
+        (p) => p.provider === a.id && !errorPostdatesCapture,
+      );
       // Which endpoints failed in the most recent poll batch (optional soft-fails included).
       const raws = db.lastRawPolls(a.id, 20);
       const latestBatch = raws[0]?.captured_at;
@@ -209,8 +221,8 @@ function recordChange(
         degradedEndpoints,
         // Includes daily history rows (model-daily) — the UI renders those in a separate
         // per-model section rather than the main card rows.
-        points: latest.filter((p) => p.provider === a.id),
-        windows: windowsFromPoints(latest.filter((p) => p.provider === a.id)).map(
+        points: ownPoints,
+        windows: windowsFromPoints(ownPoints).map(
           ({ provider: _provider, ...window }) => window,
         ),
         subscription: planRows.get(a.id) ?? null,
@@ -247,7 +259,7 @@ function recordChange(
     };
   }
 
-  registerProviderRoutes(app, { ...deps, now, fetchFn });
+  registerProviderRoutes(app, { ...deps, now, fetchFn, subscriptionsPath });
 
   app.get("/api/providers/:id/raw", (c) => {
     const id = c.req.param("id");

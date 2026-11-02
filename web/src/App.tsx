@@ -125,26 +125,28 @@ export function App() {
   }, []);
 
   return (
-    <div className="page">
-      {skew && <div className="banner error">{skew}</div>}
-      <header className="header">
+    <>
+      <header className="site-header">
         <img className="header-logo" src="/modelizer-icon.svg" alt="" width={26} height={26} />
         <h1>modelizer</h1>
       </header>
-      <nav className="tabs">
+      <nav className="tabs site-tabs">
         {TABS.map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
             {t}
           </button>
         ))}
       </nav>
+      <div className="page">
+      {skew && <div className="banner error">{skew}</div>}
       {tab === "dashboard" && <DashboardView />}
       {tab === "subscriptions" && <SubscriptionsView />}
       {tab === "manage" && <ManageView goSubscriptions={() => setTab("subscriptions")} />}      {tab === "changes" && <ChangesView />}
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -460,6 +462,14 @@ function PlusIcon() {
     </svg>
   );
 }
+function KeyIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11.5 3.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z" />
+      <path d="M8.8 10.2L4 15v1h1v1h1v-1h1.8l3.7-3.7" />
+    </svg>
+  );
+}
 function ErrorFlashIcon() {
   return (
     <svg className="manage-error-icon" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -481,8 +491,24 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   const [tokenForm, setTokenForm] = useState<{ id: string; name: string } | null>(null);
   const [tokenValue, setTokenValue] = useState("");
 
-  // Providers with more than one key collapse to a summary line; click expands.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Credential rows stay hidden until the user opens the key control on a card.
+  const [keysOpen, setKeysOpen] = useState<Set<string>>(new Set());
+
+  const toggleKeysPanel = (id: string) => {
+    setKeysOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        if (tokenForm?.id === id) {
+          setTokenForm(null);
+          setTokenValue("");
+        }
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   const load = async () => {
     try {
@@ -547,12 +573,20 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
 
   const tokenEntries = (p: ManageProvider) => Object.entries(p.tokens);
   const keyCount = (p: ManageProvider) => tokenEntries(p).filter(([, t]) => t.source !== "absent").length;
-  const worstStatus = (p: ManageProvider) => {
-    const statuses = tokenEntries(p).map(([, t]) => t.source);
-    if (statuses.includes("absent")) return "not set";
-    if (statuses.includes("env")) return "env";
-    return "in Keychain";
+  const keysSummary = (p: ManageProvider) => {
+    const entries = tokenEntries(p);
+    if (entries.length === 0) return "no API keys for this integration yet";
+    const set = keyCount(p);
+    const total = entries.length;
+    const head = total === 1 ? entries[0]![0] : `${set} of ${total} keys set`;
+    const statuses = entries.map(([, t]) => t.source);
+    let detail = "not set";
+    if (statuses.every((s) => s === "env")) detail = "set by environment";
+    else if (statuses.every((s) => s === "keychain" || s === "env")) detail = "in Keychain";
+    else if (set === total) detail = "all set";
+    return `${head} · ${detail}`;
   };
+
 
   return (
     <div className="manage-view">
@@ -568,64 +602,73 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
       <section className="manage-section">
         <h2>Providers</h2>
         <p className="manage-hint">Built-in integrations. Removing one keeps its subscriptions, history, models and tokens; changes apply without restarting.</p>
-        <div className="cards">
-          {(providers ?? []).filter((p) => p.enabled).map((p) => {
+        <div className="cards manage-provider-cards">
+          {(providers ?? []).map((p) => {
             const entries = tokenEntries(p);
-            const isExpanded = expanded.has(p.id);
+            const keysVisible = keysOpen.has(p.id);
+            const keysUnset = entries.some(([, t]) => t.source === "absent");
+            const statusHints = [...p.missingCredentials, ...(p.statusNotes ?? [])];
+            const idx = (providers ?? []).indexOf(p);
             return (
-              <div key={p.id} className="card manage-card">
-                <div className="manage-card-title">
-                  <ProviderIcon id={p.id} />
-                  <span className="manage-provider-name">{providerName(p.id)}</span>
-                  <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
-                  {p.missingCredentials.length > 0 && (
-                    <span className="manage-error" tabIndex={0} role="img" aria-label={p.missingCredentials.join("; ")}>
-                      <ErrorFlashIcon />
-                      <span className="manage-error-tip" role="tooltip">{p.missingCredentials.join("; ")}</span>
-                    </span>
-                  )}
-                  <span className="manage-auth">{p.authMethod}</span>
-                  <label className="switch manage-switch-top" aria-label={`enabled — poll ${providerName(p.id)} and show it on the dashboard`}>
-                    <input
-                      type="checkbox"
-                      checked={p.enabled}
-                      onChange={(e) => toggleProvider(p.id, e.target.checked)}
-                    />
-                    <span className="switch-slider" />
-                  </label>
+              <div key={p.id} className="manage-provider-slot">
+                <div className="manage-reorder-outside" aria-label={`reorder ${p.id}`}>
+                  <button className="manage-tiny" onClick={() => moveProvider(idx, -1)} disabled={idx === 0} aria-label={`move ${p.id} up`}>↑</button>
+                  <button className="manage-tiny" onClick={() => moveProvider(idx, 1)} disabled={idx === (providers ?? []).length - 1} aria-label={`move ${p.id} down`}>↓</button>
                 </div>
-                <div className="manage-line">
-                  <span />
-                  <span className="manage-actions">
-                    <button className="manage-tiny" onClick={() => moveProvider(providers.indexOf(p), -1)} disabled={providers.indexOf(p) === 0} aria-label={`move ${p.id} up`}>↑</button>
-                    <button className="manage-tiny" onClick={() => moveProvider(providers.indexOf(p), 1)} disabled={providers.indexOf(p) === providers.length - 1} aria-label={`move ${p.id} down`}>↓</button>
-                    <button
-                      className="manage-tiny manage-danger"
-                      onClick={() => removeProv(p.id)}
-                      aria-label={armedProvider === p.id ? `confirm remove ${p.id}` : `remove ${p.id}`}
-                      title={armedProvider === p.id ? "click again to confirm" : "remove provider"}
-                    >
-                      <span className={armedProvider === p.id ? "manage-armed" : undefined}><TrashIcon /></span>
-                    </button>
-                  </span>
-                </div>
-                {entries.length > 1 && !isExpanded ? (
-                  <button className="manage-line manage-keys-summary" onClick={() => setExpanded(new Set([...expanded, p.id]))} aria-expanded={false}>
-                    <span>{keyCount(p)} of {entries.length} keys set · {worstStatus(p)}</span>
-                    <span className="manage-actions">
-                      <span className="manage-tiny manage-expand-chevron" aria-hidden="true">▾</span>
+                <div className="card manage-card">
+                <div className="manage-card-face">
+                  <div className="manage-card-face-main">
+                    <div className="manage-card-identity">
+                      <ProviderIcon id={p.id} />
+                      <span className="manage-provider-name">{p.displayName}</span>
+                    </div>
+                    <div className="manage-card-status">
+                      <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
+                      {statusHints.length > 0 && (
+                        <span className="manage-error" tabIndex={0} role="img" aria-label={statusHints.join("; ")}>
+                          <ErrorFlashIcon />
+                          <span className="manage-error-tip" role="tooltip">{statusHints.join(" ")}</span>
+                        </span>
+                      )}
+                      {entries.length > 0 && (
+                      <button
+                        type="button"
+                        className={`manage-tiny manage-icon-btn manage-key-btn${keysUnset ? " manage-key-warn" : ""}${keysVisible ? " manage-key-open" : ""}`}
+                        onClick={() => toggleKeysPanel(p.id)}
+                        aria-expanded={keysVisible}
+                        aria-label={`credentials — ${keysSummary(p)}`}
+                        title={keysSummary(p)}
+                      >
+                        <KeyIcon />
+                      </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="manage-card-face-controls">
+                    <label className="switch manage-switch-top" aria-label={`enabled — poll ${p.displayName} and show it on the dashboard`}>
+                      <input
+                        type="checkbox"
+                        checked={p.enabled}
+                        disabled={p.canEnable === false}
+                        onChange={(e) => toggleProvider(p.id, e.target.checked)}
+                      />
+                      <span className="switch-slider" />
+                    </label>
+                    <span className="manage-auth">{p.authMethod}</span>
+                    <span className="manage-actions manage-card-remove">
+                      <button
+                        className="manage-tiny manage-danger"
+                        onClick={() => removeProv(p.id)}
+                        aria-label={armedProvider === p.id ? `confirm remove ${p.id}` : `remove ${p.id}`}
+                        title={armedProvider === p.id ? "click again to confirm" : "remove provider"}
+                      >
+                        <span className={armedProvider === p.id ? "manage-armed" : undefined}><TrashIcon /></span>
+                      </button>
                     </span>
-                  </button>
-                ) : (
-                  <>
-                    {entries.length > 1 && (
-                      <div className="manage-line">
-                        <button className="manage-tiny manage-keys-collapse" onClick={() => setExpanded(new Set([...expanded].filter((x) => x !== p.id)))} aria-expanded={true}>
-                          ▴ collapse keys
-                        </button>
-                        <span />
-                      </div>
-                    )}
+                  </div>
+                </div>
+                {keysVisible && (
+                  <div className="manage-keys-panel">
                     {entries.map(([name, token]) => (
                       <div key={name} className="manage-line manage-token-row">
                         {tokenForm?.id === p.id && tokenForm.name === name ? (
@@ -680,29 +723,13 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                         )}
                       </div>
                     ))}
-                  </>
+                  </div>
                 )}
+                </div>
               </div>
             );
           })}
         </div>
-        {(providers ?? []).some((p) => !p.enabled) && (
-          <div className="manage-addprovider">
-            <span className="muted">add a provider:</span>
-            {(providers ?? []).filter((p) => !p.enabled).map((p) => (
-              <button
-                key={p.id}
-                className="manage-tiny manage-add-btn"
-                onClick={() => toggleProvider(p.id, true)}
-                aria-label={`add ${providerName(p.id)}`}
-                title={`enable ${providerName(p.id)} — polling starts on the next tick`}
-              >
-                <PlusIcon />
-                {providerName(p.id)}
-              </button>
-            ))}
-          </div>
-        )}
       </section>
     </div>
   );
@@ -996,6 +1023,105 @@ function usdPerM(rate: number): string {
   return `$${Number(rate.toFixed(rate < 1 ? 3 : 2))}`;
 }
 
+function SubscriptionAddPanel({
+  configured,
+  rowProviders,
+  onAdded,
+  onError,
+}: {
+  configured: Set<string>;
+  rowProviders: Set<string>;
+  onAdded: () => void;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [provider, setProvider] = useState("");
+  const [plan, setPlan] = useState("");
+  const [price, setPrice] = useState("");
+  const [currency, setCurrency] = useState("USD");
+  const [working, setWorking] = useState(false);
+
+  const suggestions = Object.keys(PROVIDER_NAMES)
+    .filter((id) => !configured.has(id))
+    .sort((a, b) => PROVIDER_NAMES[a]!.localeCompare(PROVIDER_NAMES[b]!));
+
+  const save = async () => {
+    const id = provider.trim();
+    if (id === "" || working) return;
+    if (configured.has(id)) {
+      onError(`subscriptions.toml already has an entry for ${id}`);
+      return;
+    }
+    setWorking(true);
+    onError("");
+    try {
+      await addSubscription({
+        provider: id,
+        ...(plan === "" ? {} : { plan }),
+        ...(price === "" ? {} : { price: Number(price) }),
+        ...(currency === "" ? {} : { currency: currency.toUpperCase() }),
+        state: "active",
+      });
+      setOpen(false);
+      setProvider("");
+      setPlan("");
+      setPrice("");
+      onAdded();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="subs-add">
+      <button type="button" className="manage-small" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        {open ? "cancel" : "add subscription"}
+      </button>
+      {open && (
+        <div className="subs-add-form" aria-label="add subscription">
+          <label className="sub-edit-field">
+            <span className="muted">provider id</span>
+            <input
+              className="manage-input"
+              list="subs-provider-suggestions"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              placeholder="e.g. freebuff, xai, opencode"
+            />
+            <datalist id="subs-provider-suggestions">
+              {suggestions.map((id) => (
+                <option key={id} value={id}>{PROVIDER_NAMES[id]}</option>
+              ))}
+            </datalist>
+          </label>
+          <label className="sub-edit-field">
+            <span className="muted">plan</span>
+            <input className="manage-input" value={plan} onChange={(e) => setPlan(e.target.value)} />
+          </label>
+          <label className="sub-edit-field">
+            <span className="muted">price</span>
+            <input className="manage-input manage-price" type="number" min="0" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} />
+          </label>
+          <label className="sub-edit-field">
+            <span className="muted">currency</span>
+            <input className="manage-input manage-currency" maxLength={3} value={currency} onChange={(e) => setCurrency(e.target.value)} />
+          </label>
+          <button type="button" className="add-btn" disabled={working || provider.trim() === ""} onClick={() => void save()}>
+            {working ? "saving…" : "save to subscriptions.toml"}
+          </button>
+          {rowProviders.has(provider.trim()) && !configured.has(provider.trim()) && (
+            <p className="muted subs-add-note">
+              This provider already appears from adapter facts — saving creates your price/renewal override in subscriptions.toml.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SubscriptionsView() {
   const [data, setData] = useState<SubscriptionsResponse | null>(() => peekCache<SubscriptionsResponse>("subscriptions"));
   const [saved, setSaved] = useState<SavedSubscription[] | null>(() => peekCache<SavedSubscription[]>("subs-config"));
@@ -1045,6 +1171,12 @@ function SubscriptionsView() {
       </div>
       {error && <div className="banner error">Can't reach the modelizer server ({error}).</div>}
       {data?.error && <div className="banner error">{data.error} — fix the file; no restart needed.</div>}
+      <SubscriptionAddPanel
+        configured={savedProviders}
+        rowProviders={new Set(rows.map((s) => s.provider))}
+        onAdded={() => void load()}
+        onError={setError}
+      />
       {data !== null && data.error === null && rows.length === 0 && (
         <div className="banner">
           No subscriptions yet — copy <code>subscriptions.example.toml</code> to <code>{data.configPath}</code> and list
@@ -1320,8 +1452,9 @@ const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   cursor: "SpaceX (Cursor)",
   zai: "ZAI",
   openrouter: "Open Router",
-  opencode: "OpenCode",
-  freebuff: "Freebuff",
+  opencode: "Open Code",
+  freebuff: "Free Buff",
+  xai: "Grok (xAI)",
   freellmapi: "freellmapi.co",
   deepseek: "DeepSeek",
   moonshot: "Kimi (Moonshot)",
@@ -1531,7 +1664,7 @@ function QuotaWindowList({ providerName, windows, tick }: QuotaWindowListProps) 
           <div className="quota-window-usage">
             <span className="quota-window-label">{friendlyLabel(w.label)}</span>
             <span className="quota-window-value">
-              {quotaUsageText(w).trim().replace(/ ·$/, "") || "Usage not reported"}
+              {quotaUsage(w) || "Usage not reported"}
             </span>
           </div>
           <div className="quota-window-reset">
@@ -1711,7 +1844,8 @@ function windowIsIdle(point: UsagePoint): boolean {
   return point.used === 0;
 }
 
-function quotaUsageText(point: UsagePoint): string {
+/** Renders quota usage as "XX% left / XX% used" (the used part muted); other units keep the old shape. */
+function quotaUsage(point: UsagePoint): React.ReactNode {
   const estimate = point.source?.match(/^freellmapi-catalog-estimate:(.+)$/)?.[1];
   if (estimate !== undefined) {
     const used = point.used ?? 0;
@@ -1719,10 +1853,13 @@ function quotaUsageText(point: UsagePoint): string {
     const remaining = point.limit === null ? null : Math.max(point.limit - used, 0);
     const prompts = average !== null && remaining !== null ? remaining / average : null;
     const promptText = prompts === null || average === null ? "" : ` · ~${fmtCount(prompts)} prompts at ${fmtValue(average, "tokens")} each`;
-    return `estimated ${estimate} tokens · ${fmtValue(used, point.unit)} tokens used${promptText} · `;
+    return <>estimated {estimate} tokens · {fmtValue(used, point.unit)} tokens used{promptText}</>;
   }
-  if (point.used === null) return "";
-  return `${fmtValue(point.used, point.unit)}${point.unit === "tokens" ? " tokens" : ""} used · `;
+  if (point.used === null) return null;
+  const usedText = `${fmtValue(point.used, point.unit)}${point.unit === "tokens" ? " tokens" : ""}`;
+  if (point.unit !== "percent") return <>{usedText} used</>;
+  const left = Math.max((point.limit ?? 100) - point.used, 0);
+  return <>{fmtValue(left, point.unit)} left <span className="muted">/ {usedText} used</span></>;
 }
 
 function fmtCount(value: number): string {

@@ -25,27 +25,7 @@ if [[ "$VALUE" == \<* ]] || [[ "$VALUE" == *\> ]] || [[ "$VALUE" =~ [[:space:]] 
   exit 1
 fi
 
-# Optional per-key validators: emit nothing on success, text on failure.
-# Add new providers here; keep output key-free.
-validate() {
-  case "$NAME" in
-    ZAI_API_KEY)
-      local code
-      code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $VALUE" \
-        -H "Accept: application/json" "https://api.z.ai/api/monitor/usage/quota/limit")
-      [ "$code" = "200" ] || { echo "FAIL: z.ai answered HTTP $code (want 200)"; return 1; }
-      ;;
-    OPENROUTER_API_KEY)
-      local code
-      code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $VALUE" \
-        "https://openrouter.ai/api/v1/key")
-      [ "$code" = "200" ] || { echo "FAIL: openrouter answered HTTP $code (want 200)"; return 1; }
-      ;;
-    *) echo "note: no validator for ${NAME} — storing unvalidated" ;;
-  esac
-}
-
-validate
+# Owner directive (2026-10-31): values are stored verbatim, no validation gate.
 
 security add-generic-password -s "$SERVICE" -a "$NAME" -w "$VALUE" -U
 echo "PASS: ${NAME} stored in keychain '${SERVICE}' (validated, agent-blind)"

@@ -187,7 +187,7 @@ live provider call and never include credential material.
     "order": 4,
     "missingCredentials": [],
     "tokens": { "OPENAI_ADMIN_API_KEY": { "set": true, "source": "keychain", "shadowed": false } },
-    "authMethod": "app: ChatGPT login",   // api-key | app: <name> | oauth
+    "authMethod": "app: ChatGPT login",   // api-key | app: <name> | oauth | TBD
     "appAuthPresent": true,
     "authHealth": "ok"                     // no-token | rejected | quota | ok | unknown
   }],

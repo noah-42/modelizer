@@ -63,11 +63,11 @@ export function cursorStatePath(env: Record<string, string | undefined>): string
   return join(homedir(), "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb");
 }
 
-/**
- * Read the Cursor access token from `state.vscdb`. Opened read-only and closed again; the token
- * is returned to the caller and never logged or archived.
- */
-export function readCursorAccessToken(statePath: string): string | null {
+/** Cursor's at-rest encryption envelope (observed 2026-10-31): token is ciphertext, not a bearer. */
+export const CURSOR_ENCRYPTED_TOKEN_PREFIX = "cursor-safe-storage:";
+
+/** Raw stored value, whatever its envelope; null when the key is absent or blank. */
+function readCursorStoredToken(statePath: string): string | null {
   if (!existsSync(statePath)) return null;
   let db: Database | null = null;
   try {
@@ -82,6 +82,23 @@ export function readCursorAccessToken(statePath: string): string | null {
   } finally {
     db?.close();
   }
+}
+
+/**
+ * Read the Cursor access token from `state.vscdb`. Opened read-only and closed again; the token
+ * is returned to the caller and never logged or archived. Null when the stored value is the
+ * encrypted envelope — it is not a bearer, and sending it only earns a 401.
+ */
+export function readCursorAccessToken(statePath: string): string | null {
+  const raw = readCursorStoredToken(statePath);
+  if (raw === null) return null;
+  return raw.startsWith(CURSOR_ENCRYPTED_TOKEN_PREFIX) ? null : raw;
+}
+
+/** True when Cursor holds the token only in its proprietary encrypted envelope. */
+export function cursorTokenIsEncrypted(statePath: string): boolean {
+  const raw = readCursorStoredToken(statePath);
+  return raw !== null && raw.startsWith(CURSOR_ENCRYPTED_TOKEN_PREFIX);
 }
 
 /** Plan facts from `full_stripe_profile`; null when Cursor reports no paid plan. */
@@ -219,9 +236,10 @@ export const cursorAdapter: Adapter = {
   pollEveryMs: CURSOR_POLL_MS,
 
   isConfigured(env) {
-    return existsSync(cursorStatePath(env));
+    return Boolean(env.CURSOR_API_KEY?.trim()) || existsSync(cursorStatePath(env));
   },
   missingCredentials(env) {
+    if (env.CURSOR_API_KEY?.trim()) return [];
     const path = cursorStatePath(env);
     return existsSync(path) ? [] : ["Cursor (sign in, then set CURSOR_STATE_DB if it is not in the default location)"];
   },
@@ -239,7 +257,16 @@ export const cursorAdapter: Adapter = {
 
   async collect(ctx: CollectContext) {
     const statePath = cursorStatePath(ctx.env);
-    const token = readCursorAccessToken(statePath);
+    const envKey = ctx.env.CURSOR_API_KEY?.trim() ?? "";
+    if (envKey === "" && cursorTokenIsEncrypted(statePath)) {
+      // Sending the envelope earns a bare 401 and makes the card look broken; name the real
+      // state instead. Cursor's public API keys (Agent/Admin) do not expose the personal
+      // usage meter, so there is no supported key path for individual plans today.
+      throw new Error(
+        "Cursor stores its access token encrypted at rest (cursor-safe-storage envelope, observed 2026-10-31) — modelizer cannot read it, so usage polling is paused. Cursor's public API keys (Agent/Admin) do not expose the personal usage meter; plan and billing still come from subscriptions.toml.",
+      );
+    }
+    const token = envKey !== "" ? envKey : readCursorAccessToken(statePath);
     if (token === null) return [tokenMissingPoll(statePath)];
     return Promise.all([
       pollWithToken(ctx, CURSOR_PROFILE_ENDPOINT, CURSOR_PROFILE_URL, token, { method: "GET" }),
@@ -248,6 +275,21 @@ export const cursorAdapter: Adapter = {
         body: CONNECT_EMPTY_BODY,
       }),
     ]);
+  },
+
+  authFailure(polls) {
+    // Both endpoints share one bearer from state.vscdb; 401/403 on either means Cursor rejected
+    // the stored token (sign-out or rotation). Named like the other adapters so the card says
+    // "auth failed" instead of keeping the last captured window visible as if it were current.
+    for (const p of polls) {
+      if (p.endpoint !== CURSOR_PROFILE_ENDPOINT && p.endpoint !== CURSOR_PERIOD_ENDPOINT) continue;
+      if (p.status === 401 || p.status === 403) {
+        return "Cursor rejected the stored access token (HTTP " +
+          p.status +
+          ") — the app keeps its session in memory but stopped rewriting the token in state.vscdb. Sign out and back in to refresh the local token; Cursor's public API keys cannot poll the personal usage meter";
+      }
+    }
+    return null;
   },
 
   /** The included usage for the current period, when that poll succeeded. */
