@@ -75,6 +75,8 @@ export interface OverviewProvider {
   id: string;
   /** Display name resolved server-side: modelizer.toml override, else the registry name. */
   name: string;
+  /** Bare company domain from companyWebsite (e.g. "x.ai"), or null when unknown. */
+  companyDomain: string | null;
   stabilityTier: number;
   pollEverySeconds: number;
   configured: boolean;

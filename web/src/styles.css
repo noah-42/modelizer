@@ -1461,3 +1461,12 @@ code {
 .card-slot[draggable="true"] {
   cursor: grab;
 }
+
+/* Tiny company-domain tag beside the provider name on dashboard cards. */
+.company-domain {
+  font-size: 10px;
+  font-weight: 400;
+  color: #9fc3f0;
+  opacity: 0.85;
+  margin-left: 6px;
+}

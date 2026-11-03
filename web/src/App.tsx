@@ -1828,6 +1828,7 @@ function ProviderCard({
             </span>
             <ProviderIcon id={p.id} />
             {p.name ?? providerName(p.id)}
+            {p.companyDomain !== null && <span className="company-domain">{p.companyDomain}</span>}
           </button>
         </h2>
         <div className="badges">
