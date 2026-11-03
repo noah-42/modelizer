@@ -158,12 +158,26 @@ function DashboardView() {
   const [tick, setTick] = useState(0);
   const [hidden, setHidden] = useState<string[]>(loadHidden);
 
+  // Dashboard card drag: reorder locally on drop, persist through the provider-order API.
+  const [dragId, setDragId] = useState<string | null>(null);
+
   useEffect(() => {
     localStorage.setItem(HIDDEN_KEY, JSON.stringify(hidden));
   }, [hidden]);
 
   const toggle = (id: string) =>
     setHidden((h) => (h.includes(id) ? h.filter((x) => x !== id) : [...h, id]));
+
+  const moveCard = (drag: string, over: string) => {
+    if (overview === null || drag === over) return;
+    const ids = overview.providers.map((p) => p.id);
+    const from = ids.indexOf(drag);
+    const to = ids.indexOf(over);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]!);
+    setOverview({ ...overview, providers: ids.map((id) => overview.providers.find((p) => p.id === id)!) });
+    reorderProviders(ids).catch((err) => setError((err as Error).message));
+  };
 
   useEffect(() => {
     let alive = true;
@@ -250,13 +264,27 @@ function DashboardView() {
         {overview?.providers
           .filter((p) => !hidden.includes(p.id))
           .map((p) => (
-            <ProviderCard
+            <div
               key={p.id}
-              provider={p}
-              models={models.filter((m) => m.provider === p.id)}
-              tick={tick}
-              onHide={() => toggle(p.id)}
-            />
+              className="card-slot"
+              draggable
+              onDragStart={() => setDragId(p.id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragId !== null) moveCard(dragId, p.id);
+                setDragId(null);
+              }}
+              onDragEnd={() => setDragId(null)}
+              style={{ opacity: dragId === p.id ? 0.45 : undefined }}
+            >
+              <ProviderCard
+                provider={p}
+                models={models.filter((m) => m.provider === p.id)}
+                tick={tick}
+                onHide={() => toggle(p.id)}
+              />
+            </div>
           ))}
       </div>
 

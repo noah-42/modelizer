@@ -242,6 +242,12 @@ function recordChange(
     for (const row of planRows.values()) {
       if (!polled.has(row.provider)) providers.push(planOnlyProvider(row, resolveName(row.provider)));
     }
+    // The dashboard respects the saved provider order (drag on the dashboard, arrows on Manage).
+    const orderIndex = new Map((config.order ?? []).map((id, index) => [id, index]));
+    providers.sort(
+      (a, b) =>
+        (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
     return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);
   });
 

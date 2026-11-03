@@ -1448,3 +1448,16 @@ code {
   margin: 0;
   font-size: 12px;
 }
+
+/* Dashboard drag slots: transparent wrappers that keep the grid layout intact. */
+.card-slot {
+  display: flex;
+  min-width: 0;
+}
+.card-slot > .card {
+  flex: 1;
+  min-width: 0;
+}
+.card-slot[draggable="true"] {
+  cursor: grab;
+}
