@@ -226,7 +226,7 @@ function DashboardView() {
         <div className="next-reset" title={nextReset.resetAt}>
           <span className="status-dot" />
           <span>
-            next reset: <strong>{providerName(nextReset.provider)} · {friendlyLabel(nextReset.label)}</strong> in{" "}
+            next reset: <strong>{overview?.providers.find((p) => p.id === nextReset.provider)?.name ?? providerName(nextReset.provider)} · {friendlyLabel(nextReset.label)}</strong> in{" "}
             <strong className="countdown">{countdownLong(nextReset.resetAt, tick)}</strong> · at{" "}
             {fmtLocalClock(nextReset.resetAt)}
           </span>
@@ -1799,7 +1799,7 @@ function ProviderCard({
               ▸
             </span>
             <ProviderIcon id={p.id} />
-            {providerName(p.id)}
+            {p.name ?? providerName(p.id)}
           </button>
         </h2>
         <div className="badges">

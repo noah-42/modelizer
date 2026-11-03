@@ -73,6 +73,8 @@ export interface DegradedEndpoint {
 
 export interface OverviewProvider {
   id: string;
+  /** Display name resolved server-side: modelizer.toml override, else the registry name. */
+  name: string;
   stabilityTier: number;
   pollEverySeconds: number;
   configured: boolean;
