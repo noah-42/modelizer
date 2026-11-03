@@ -19,6 +19,7 @@ import {
   reorderProviders,
   setClaudeOAuthUsage,
   setProviderEnabled,
+  updateProviderMeta,
   setToken,
   updateSubscription,
   type AuditEventRow,
@@ -494,6 +495,33 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
   // Credential rows stay hidden until the user opens the key control on a card.
   const [keysOpen, setKeysOpen] = useState<Set<string>>(new Set());
 
+  // Provider metadata edit panel: one card at a time; writes modelizer.toml via the API.
+  const [metaForm, setMetaForm] = useState<{
+    id: string;
+    values: { displayName: string; companyName: string; companyLinkedIn: string; companyWebsite: string; companyX: string };
+  } | null>(null);
+
+  const openMeta = (p: ManageProvider) =>
+    setMetaForm({
+      id: p.id,
+      values: {
+        displayName: p.displayName ?? "",
+        companyName: p.companyName ?? "",
+        companyLinkedIn: p.companyLinkedIn ?? "",
+        companyWebsite: p.companyWebsite ?? "",
+        companyX: p.companyX ?? "",
+      },
+    });
+
+  const submitMeta = async () => {
+    if (metaForm === null) return;
+    const { id, values } = metaForm;
+    await run(async () => {
+      await updateProviderMeta(id, values);
+      setMetaForm(null);
+    }, `${id} details saved`);
+  };
+
   const toggleKeysPanel = (id: string) => {
     setKeysOpen((prev) => {
       const next = new Set(prev);
@@ -621,6 +649,16 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                     <div className="manage-card-identity">
                       <ProviderIcon id={p.id} />
                       <span className="manage-provider-name">{p.displayName}</span>
+                      <button
+                        type="button"
+                        className="manage-tiny manage-icon-btn"
+                        onClick={() => (metaForm?.id === p.id ? setMetaForm(null) : openMeta(p))}
+                        aria-expanded={metaForm?.id === p.id}
+                        aria-label={`edit details — ${p.displayName}`}
+                        title="edit name & company details"
+                      >
+                        ✎
+                      </button>
                     </div>
                     <div className="manage-card-status">
                       <span className={`manage-badge manage-health-${p.authHealth}`}>{HEALTH_LABELS[p.authHealth] ?? p.authHealth}</span>
@@ -723,6 +761,43 @@ function ManageView({ goSubscriptions }: { goSubscriptions: () => void }) {
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+                {metaForm?.id === p.id && (
+                  <div className="manage-keys-panel">
+                    <div className="manage-line manage-token-row">
+                      <span className="manage-token-label">details — stored in modelizer.toml</span>
+                    </div>
+                    {(
+                      [
+                        ["displayName", "display name"],
+                        ["companyName", "company name"],
+                        ["companyLinkedIn", "LinkedIn URL"],
+                        ["companyWebsite", "website URL"],
+                        ["companyX", "X / Twitter URL"],
+                      ] as const
+                    ).map(([field, label]) => (
+                      <div key={field} className="manage-line manage-token-row">
+                        <span className="manage-token-label">{label}</span>
+                        <input
+                          type="text"
+                          className="manage-input"
+                          value={metaForm.values[field]}
+                          onChange={(e) =>
+                            setMetaForm((prev) =>
+                              prev === null ? prev : { ...prev, values: { ...prev.values, [field]: e.target.value } },
+                            )
+                          }
+                          aria-label={`${label} for ${p.id}`}
+                        />
+                      </div>
+                    ))}
+                    <div className="manage-line manage-token-row">
+                      <span className="manage-actions">
+                        <button className="manage-tiny" onClick={() => void submitMeta()} aria-label={`save details for ${p.id}`}>save</button>
+                        <button className="manage-tiny" onClick={() => setMetaForm(null)} aria-label="cancel">cancel</button>
+                      </span>
+                    </div>
                   </div>
                 )}
                 </div>

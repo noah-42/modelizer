@@ -415,6 +415,10 @@ export interface TokenStatus {
 export interface ManageProvider {
   id: string;
   displayName: string;
+  companyName?: string | null;
+  companyLinkedIn?: string | null;
+  companyWebsite?: string | null;
+  companyX?: string | null;
   enabled: boolean;
   order: number;
   missingCredentials: string[];
@@ -442,6 +446,21 @@ export async function fetchManageProviders(): Promise<ManageProvidersResponse> {
   const body = (await res.json()) as ManageProvidersResponse;
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body;
+}
+
+export async function updateProviderMeta(
+  id: string,
+  meta: { displayName?: string; companyName?: string; companyLinkedIn?: string; companyWebsite?: string; companyX?: string },
+): Promise<void> {
+  const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/meta`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(meta),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `HTTP ${res.status}`);
+  }
 }
 
 export async function setProviderEnabled(id: string, enabled: boolean): Promise<void> {

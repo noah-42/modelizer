@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { loadConfig, DEFAULT_CONFIG, setProviderEnabled, setProviderOrder } from "./config";
+import { loadConfig, DEFAULT_CONFIG, setProviderEnabled, setProviderMeta, setProviderOrder } from "./config";
 import { ADAPTERS } from "./adapters";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -137,4 +137,30 @@ test("server.token falls back to the MODELIZER_TOKEN environment variable", asyn
     else process.env.MODELIZER_TOKEN = previous;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("setProviderMeta", () => {
+  test("sets, updates and clears provider metadata lines in place", () => {
+    const dir = mkdtempSync(join(tmpdir(), "modelizer-meta-"));
+    const path = join(dir, "modelizer.toml");
+    writeFileSync(path, '[providers.xai]\nenabled = true\n\n[providers.zai]\nenabled = true\n');
+    setProviderMeta("xai", { displayName: "Grok", companyName: "xAI", companyWebsite: "https://x.ai" }, path);
+    let cfg = loadConfig(path);
+    expect(cfg.providers.xai?.displayName).toBe("Grok");
+    expect(cfg.providers.xai?.companyName).toBe("xAI");
+    expect(cfg.providers.xai?.companyWebsite).toBe("https://x.ai");
+    expect(cfg.providers.xai?.companyLinkedIn).toBeUndefined();
+    expect(cfg.providers.zai?.displayName).toBeUndefined();
+    // update one field, clear another
+    setProviderMeta("xai", { companyName: "" }, path);
+    cfg = loadConfig(path);
+    expect(cfg.providers.xai?.displayName).toBe("Grok");
+    expect(cfg.providers.xai?.companyName).toBeUndefined();
+    // creates a section for a provider with no block yet
+    setProviderMeta("openrouter", { displayName: "Open Router" }, path);
+    cfg = loadConfig(path);
+    expect(cfg.providers.openrouter?.displayName).toBe("Open Router");
+    expect(cfg.providers.xai?.enabled).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

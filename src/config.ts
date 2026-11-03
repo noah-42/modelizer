@@ -5,6 +5,12 @@ import { isKnownProviderId } from "./provider-registry";
 
 export interface ProviderConfig {
   enabled: boolean;
+  /** Optional per-provider metadata editable on the manage tab; empty = unset. */
+  displayName?: string;
+  companyName?: string;
+  companyLinkedIn?: string;
+  companyWebsite?: string;
+  companyX?: string;
 }
 
 export interface Config {
@@ -38,8 +44,19 @@ export function loadConfig(path = "modelizer.toml"): Config {
   const raw = text === "" ? ({} as RawConfig) : (parse(text) as RawConfig);
 
   const providers: Record<string, ProviderConfig> = {};
+  const meta = (v: unknown): string | undefined => {
+    const t = typeof v === "string" ? v.trim() : "";
+    return t === "" ? undefined : t;
+  };
   for (const [id, p] of Object.entries(raw.providers ?? {})) {
-    providers[id] = { enabled: p?.enabled === true };
+    providers[id] = {
+      enabled: p?.enabled === true,
+      displayName: meta(p?.displayName),
+      companyName: meta(p?.companyName),
+      companyLinkedIn: meta(p?.companyLinkedIn),
+      companyWebsite: meta(p?.companyWebsite),
+      companyX: meta(p?.companyX),
+    };
   }
   return {
     server: {
@@ -79,6 +96,54 @@ export function setProviderEnabled(id: string, enabled: boolean, path = DEFAULT_
       lines.splice(section.end, 0, `enabled = ${enabled}`);
     }
   }
+  writeConfigText(path, lines.join("\n"));
+}
+
+const META_KEYS = ["displayName", "companyName", "companyLinkedIn", "companyWebsite", "companyX"] as const;
+export type ProviderMeta = Partial<Record<(typeof META_KEYS)[number], string>>;
+
+/** Set or clear per-provider metadata lines (displayName, company fields) in modelizer.toml.
+ * An empty/undefined value removes the line; a value is written as a quoted TOML string. */
+export function setProviderMeta(id: string, meta: ProviderMeta, path = DEFAULT_CONFIG_PATH): void {
+  validateProviderIds([id], path);
+  const mentioned = META_KEYS
+    .filter((key) => meta[key] !== undefined)
+    .map((key) => [key, (meta[key] ?? "").trim()] as const);
+  const clean = mentioned.filter(([, v]) => v !== "");
+  const cleared = mentioned.filter(([, v]) => v === "").map(([k]) => k);
+  for (const [, v] of clean) {
+    if (v.length > 200) throw new Error(`${id}: metadata value too long (max 200 chars)`);
+    if (/["\\\n]/.test(v)) throw new Error(`${id}: metadata value contains characters TOML cannot hold raw`);
+  }
+  const lines = readConfigText(path).split("\n");
+  const header = `[providers.${id}]`;
+  const section = findProviderSection(lines, header);
+  if (section === null) {
+    const current = lines.join("\n");
+    const separator = current.trim() === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+    const body = clean.map(([k, v]) => `${k} = "${v}"`).join("\n");
+    const block = `${separator}${header}\nenabled = false\n${body}${body ? "\n" : ""}`;
+    writeConfigText(path, `${current}${block}`);
+    return;
+  }
+  const keyLine = (key: string): number => {
+    const re = new RegExp(`^\\s*${key}\\s*=`);
+    for (let i = section.start + 1; i < section.end; i++) {
+      if (re.test(lines[i] ?? "")) return i;
+    }
+    return -1;
+  };
+  let at = section.end;
+  for (const [key, value] of clean) {
+    const i = keyLine(key);
+    if (i >= 0) lines[i] = `${key} = "${value}"`;
+    else {
+      lines.splice(at, 0, `${key} = "${value}"`);
+      at += 1;
+    }
+  }
+  const toRemove = cleared.map(keyLine).filter((i) => i >= 0).sort((a, b) => b - a);
+  for (const i of toRemove) lines.splice(i, 1);
   writeConfigText(path, lines.join("\n"));
 }
 

@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { ADAPTERS, ADAPTERS_BY_ID } from "./adapters";
 import type { Adapter } from "./adapters/types";
-import { loadConfig, setProviderEnabled, setProviderOrder } from "./config";
+import { loadConfig, setProviderEnabled, setProviderMeta, setProviderOrder, type ProviderMeta } from "./config";
 import type { AdapterStateRow, Db } from "./db";
 import { providerAuth, type AuthMethod } from "./provider-auth";
 import {
@@ -101,9 +101,14 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
             ? { authMethod: pending.authMethod }
             : { authMethod: "app: subscriptions.toml" as AuthMethod, appAuthPresent: true };
         const missing = adapter ? adapter.missingCredentials(env) : [];
+        const meta = config.providers[id] ?? {};
         return [{
           id,
-          displayName: manageDisplayName(id),
+          displayName: meta.displayName ?? manageDisplayName(id),
+          companyName: meta.companyName ?? null,
+          companyLinkedIn: meta.companyLinkedIn ?? null,
+          companyWebsite: meta.companyWebsite ?? null,
+          companyX: meta.companyX ?? null,
           enabled,
           onDashboard,
           canEnable: isKnownProviderId(id),
@@ -163,6 +168,27 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
       return c.json({ id, enabled: body.enabled });
     } catch {
       return c.json({ error: "Could not update provider" }, 422);
+    }
+  });
+
+  app.put("/api/providers/:id/meta", async (c) => {
+    const id = c.req.param("id");
+    if (!isKnownProviderId(id)) return c.json({ error: `unknown provider ${id}` }, 404);
+    const body = await c.req.json().catch(() => null);
+    if (body === null || typeof body !== "object") return c.json({ error: "expected a JSON body" }, 400);
+    const raw = body as Record<string, unknown>;
+    const meta: ProviderMeta = {};
+    for (const key of ["displayName", "companyName", "companyLinkedIn", "companyWebsite", "companyX"] as const) {
+      const v = raw[key];
+      if (v === undefined || v === null) continue;
+      if (typeof v !== "string") return c.json({ error: `${key} must be a string` }, 400);
+      meta[key] = v;
+    }
+    try {
+      setProviderMeta(id, meta, configPath());
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : "could not write provider metadata" }, 422);
     }
   });
 
