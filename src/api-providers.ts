@@ -171,6 +171,41 @@ export function registerProviderRoutes(app: Hono, deps: ProviderRouteDeps): void
     }
   });
 
+  /** Compact machine feed for other tools (e.g. jobscout pulls this): id + curated company intel. */
+  app.get("/api/providers/intel", (c) => {
+    try {
+      const config = loadConfig(configPath());
+      const subsPath = deps.subscriptionsPath?.() ?? (env.MODELIZER_SUBSCRIPTIONS?.trim() || DEFAULT_SUBSCRIPTIONS_PATH);
+      const savedSubs = loadSubscriptions(subsPath);
+      const subsById = new Map(savedSubs.map((s) => [s.provider, s]));
+      const ids = allManageProviderIds(config.order, savedSubs.map((s) => s.provider));
+      const providers = ids.map((id) => {
+        const meta = config.providers[id] ?? {};
+        return {
+          id,
+          name: meta.displayName ?? manageDisplayName(id),
+          company: meta.companyName ?? null,
+          domain: meta.companyWebsite
+            ? (() => {
+                try {
+                  return new URL(meta.companyWebsite).hostname.replace(/^www\./, "").toLowerCase();
+                } catch {
+                  return null;
+                }
+              })()
+            : null,
+          website: meta.companyWebsite ?? null,
+          linkedin: meta.companyLinkedIn ?? null,
+          x: meta.companyX ?? null,
+          subscriptionPlan: subsById.get(id)?.plan ?? null,
+        };
+      });
+      return c.json({ generatedAt: now().toISOString(), providers });
+    } catch {
+      return c.json({ error: "Could not read provider configuration" }, 422);
+    }
+  });
+
   app.put("/api/providers/:id/meta", async (c) => {
     const id = c.req.param("id");
     if (!isKnownProviderId(id)) return c.json({ error: `unknown provider ${id}` }, 404);
