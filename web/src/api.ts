@@ -1,3 +1,32 @@
+// Remote-dashboard auth: the server requires a token from any non-local caller.
+// A `?token=` query param (once) seeds localStorage; every API call then carries it.
+const TOKEN_KEY = "modelizer_token";
+function storedToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+try {
+  const fromUrl = new URLSearchParams(window.location.search).get("token");
+  if (fromUrl) {
+    localStorage.setItem(TOKEN_KEY, fromUrl);
+    const clean = new URL(window.location.href);
+    clean.searchParams.delete("token");
+    window.history.replaceState(null, "", clean.toString());
+  }
+} catch {
+  // non-browser context — nothing to seed
+}
+
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const token = storedToken();
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(url, { ...init, headers });
+}
+
 export type PointKind = "quota" | "balance" | "usage";
 export type Unit = "usd" | "cny" | "tokens" | "requests" | "credits" | "percent" | "unknown";
 
@@ -209,7 +238,7 @@ export function putCache<T>(key: string, data: T): void {
 }
 
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await apiFetch(url);
   return assertJson<T>(res);
 }
 
@@ -242,7 +271,7 @@ export function fetchDiary(days = 14): Promise<{ days: DiaryDay[] }> {
 
 /** A broken subscriptions.toml comes back as 422 *with* a readable error, so keep the body. */
 export async function fetchModels(): Promise<ModelsResponse> {
-  const res = await fetch("/api/models");
+  const res = await apiFetch("/api/models");
   if (!(res.headers.get("content-type") ?? "").includes("json")) {
     throw new Error("The server is older than this page — restart modelizer to load the new API.");
   }
@@ -253,7 +282,7 @@ export async function fetchModels(): Promise<ModelsResponse> {
 
 /** Add a model to the catalogue from its OpenRouter link; the server fills in the details. */
 export async function addModel(url: string, provider?: string): Promise<LlmModel> {
-  const res = await fetch("/api/models", {
+  const res = await apiFetch("/api/models", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ url }),
@@ -265,7 +294,7 @@ export async function addModel(url: string, provider?: string): Promise<LlmModel
 
 /** Remove a model from the catalogue by id; the file keeps everything else untouched. */
 export async function removeModel(id: string): Promise<void> {
-  const res = await fetch(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -274,7 +303,7 @@ export async function removeModel(id: string): Promise<void> {
 
 /** Persist a display order: the ids come in the wanted sequence, first gets `order = 1`. */
 export async function reorderModels(ids: string[]): Promise<void> {
-  const res = await fetch("/api/models/order", {
+  const res = await apiFetch("/api/models/order", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ids }),
@@ -286,7 +315,7 @@ export async function reorderModels(ids: string[]): Promise<void> {
 }
 
 export async function fetchSubscriptions(): Promise<SubscriptionsResponse> {
-  const res = await fetch("/api/subscriptions");
+  const res = await apiFetch("/api/subscriptions");
   if (!(res.headers.get("content-type") ?? "").includes("json")) {
     throw new Error("The server is older than this page — restart modelizer to load the new API.");
   }
@@ -323,7 +352,7 @@ export interface SubscriptionConfigResponse {
 
 /** Saved overrides only — the manage tab's source of truth. */
 export async function fetchSubscriptionConfig(): Promise<SubscriptionConfigResponse> {
-  const res = await fetch("/api/subscriptions/config");
+  const res = await apiFetch("/api/subscriptions/config");
   const body = (await res.json()) as SubscriptionConfigResponse;
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body;
@@ -331,7 +360,7 @@ export async function fetchSubscriptionConfig(): Promise<SubscriptionConfigRespo
 
 /** Add a `[[subscription]]` block; unknown optional fields are simply left unset. */
 export async function addSubscription(entry: Partial<SavedSubscription> & { provider: string }): Promise<SavedSubscription> {
-  const res = await fetch("/api/subscriptions", {
+  const res = await apiFetch("/api/subscriptions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(entry),
@@ -343,7 +372,7 @@ export async function addSubscription(entry: Partial<SavedSubscription> & { prov
 
 /** Edit one saved block: absent = keep, null/"" = clear. */
 export async function updateSubscription(provider: string, changes: Partial<SavedSubscription>): Promise<SavedSubscription> {
-  const res = await fetch(`/api/subscriptions/${encodeURIComponent(provider)}`, {
+  const res = await apiFetch(`/api/subscriptions/${encodeURIComponent(provider)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(changes),
@@ -355,7 +384,7 @@ export async function updateSubscription(provider: string, changes: Partial<Save
 
 /** Remove the saved override only — a provider-detected plan keeps showing on the Subscriptions page. */
 export async function deleteSubscription(provider: string): Promise<void> {
-  const res = await fetch(`/api/subscriptions/${encodeURIComponent(provider)}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/subscriptions/${encodeURIComponent(provider)}`, { method: "DELETE" });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -364,7 +393,7 @@ export async function deleteSubscription(provider: string): Promise<void> {
 
 /** Persist a subscription display order; unlisted entries keep the price sort after ranked ones. */
 export async function reorderSubscriptions(providers: string[]): Promise<void> {
-  const res = await fetch("/api/subscriptions/order", {
+  const res = await apiFetch("/api/subscriptions/order", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ providers }),
@@ -409,14 +438,14 @@ export interface ManageProvidersResponse {
 }
 
 export async function fetchManageProviders(): Promise<ManageProvidersResponse> {
-  const res = await fetch("/api/providers/manage");
+  const res = await apiFetch("/api/providers/manage");
   const body = (await res.json()) as ManageProvidersResponse;
   if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body;
 }
 
 export async function setProviderEnabled(id: string, enabled: boolean): Promise<void> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/enabled`, {
+  const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/enabled`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -429,7 +458,7 @@ export async function setProviderEnabled(id: string, enabled: boolean): Promise<
 
 /** Remove an integration: disables it and drops it from the saved order; nothing else is touched. */
 export async function removeProvider(id: string): Promise<void> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -437,7 +466,7 @@ export async function removeProvider(id: string): Promise<void> {
 }
 
 export async function reorderProviders(ids: string[]): Promise<void> {
-  const res = await fetch("/api/providers/order", {
+  const res = await apiFetch("/api/providers/order", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ids }),
@@ -450,7 +479,7 @@ export async function reorderProviders(ids: string[]): Promise<void> {
 
 /** Store a credential in the Keychain; the value is sent once and never comes back. */
 export async function setToken(id: string, name: string, value: string): Promise<void> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, {
+  const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ value }),
@@ -462,7 +491,7 @@ export async function setToken(id: string, name: string, value: string): Promise
 }
 
 export async function removeToken(id: string, name: string): Promise<void> {
-  const res = await fetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const res = await apiFetch(`/api/providers/${encodeURIComponent(id)}/tokens/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
     throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -490,7 +519,7 @@ export function fetchChanges(kind?: string): Promise<ChangesResponse> {
 
 /** Claude account-wide OAuth opt-in; process-local, nothing is written to Claude's own stores. */
 export async function setClaudeOAuthUsage(enabled: boolean): Promise<void> {
-  const res = await fetch("/api/providers/claude/oauth-usage", {
+  const res = await apiFetch("/api/providers/claude/oauth-usage", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ enabled }),
