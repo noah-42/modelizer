@@ -1,3 +1,4 @@
+import { manageDisplayName } from "./provider-registry";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -39,6 +40,7 @@ import {
   OpenRouterUrlError,
   parseModelRef,
 } from "./openrouter";
+import { loadConfig } from "./config";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
 import { registerProviderRoutes, type ProviderRouteDeps } from "./api-providers";
 
@@ -49,6 +51,8 @@ export interface DegradedEndpoint {
 
 export interface OverviewProvider {
   id: string;
+  /** Display name resolved for this card: modelizer.toml override, else the registry name. */
+  name: string;
   stabilityTier: number;
   pollEverySeconds: number;
   configured: boolean;
@@ -148,6 +152,7 @@ export function buildApi(deps: ProviderRouteDeps & {
   const app = new Hono();
   const modelsPath = () => env.MODELIZER_MODELS?.trim() || DEFAULT_MODELS_PATH;
   const subscriptionsPath = () => env.MODELIZER_SUBSCRIPTIONS?.trim() || DEFAULT_SUBSCRIPTIONS_PATH;
+  const configPath = () => env.MODELIZER_CONFIG?.trim() || "modelizer.toml";
   const expectedToken = deps.token ?? env.MODELIZER_TOKEN?.trim() ?? "";
 /** One user-made change, for the changelog page. Never carries secret values. */
 function recordChange(
@@ -175,6 +180,8 @@ function recordChange(
   });
 
   app.get("/api/overview", (c) => {
+    const config = loadConfig(configPath());
+    const resolveName = (id: string): string => config.providers[id]?.displayName ?? manageDisplayName(id);
     const states = new Map(db.getAllAdapterStates().map((s) => [s.provider, s]));
     const latest = db.latestPoints();
     const planRows = new Map(readSubscriptions(db, subscriptionsPath(), now()).rows.map((r) => [r.provider, r]));
@@ -205,6 +212,7 @@ function recordChange(
         .map((r) => ({ endpoint: r.endpoint, status: r.status }));
       return {
         id: a.id,
+        name: resolveName(a.id),
         stabilityTier: a.stabilityTier,
         pollEverySeconds: Math.round(pollEveryMs / 1000),
         configured: a.isConfigured(env),
@@ -232,15 +240,16 @@ function recordChange(
     // A plan with no adapter still belongs on the dashboard: it is something you are signed up to.
     const polled = new Set(adapters.map((a) => a.id));
     for (const row of planRows.values()) {
-      if (!polled.has(row.provider)) providers.push(planOnlyProvider(row));
+      if (!polled.has(row.provider)) providers.push(planOnlyProvider(row, resolveName(row.provider)));
     }
     return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);
   });
 
   /** A card for a plan that has no endpoint behind it: the row and nothing pretending to poll. */
-  function planOnlyProvider(subscription: Subscription): OverviewProvider {
+  function planOnlyProvider(subscription: Subscription, name: string): OverviewProvider {
     return {
       id: subscription.provider,
+      name,
       stabilityTier: 0,
       pollEverySeconds: 0,
       configured: true,
