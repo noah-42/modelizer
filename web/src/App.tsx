@@ -1926,9 +1926,14 @@ function windowsAboveTheFold(p: OverviewProvider): UsagePoint[] {
     p.points.filter((pt) => pt.day === null && pt.quota_window === window),
   );
   if (gating.length > 0) return gating;
-  return p.points.filter(
+  const withReset = p.points.filter(
     (pt) => pt.kind === "quota" && pt.reset_at !== null && (pt.day === null || pt.label === "freellmapi-daily-pool"),
   );
+  if (withReset.length > 0) return withReset;
+  // Last resort: a token-metered window without a provider reset time. Claude between sessions
+  // stops reporting the statusline (so no percent/reset points), but the 5-hour usage figure
+  // still stands — showing "not reported" for data we hold reads as a broken feed.
+  return p.points.filter((pt) => pt.day === null && pt.label === "claude-5h");
 }
 
 /**
