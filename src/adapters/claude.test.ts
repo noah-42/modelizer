@@ -534,6 +534,9 @@ describe("claude oauth helpers", () => {
     expect(expired[0]?.state).toContain("claude /login");
     expect(oauthStatusHint({ token: "t", expiresAt: 5000, source: "keychain" }, 1000)).toEqual([]);
     expect(oauthStatusHint({ token: "t", expiresAt: null, source: "env" }, 1000)).toEqual([]);
+    // 0 is the "unknown expiry" shape seen in the Claude Code keychain item —
+    // a logged-in user must not get the expired warning.
+    expect(oauthStatusHint({ token: "t", expiresAt: 0, source: "keychain" }, 1000)).toEqual([]);
   });
 
   test("parseOAuthUsage: flat buckets win, limits fill gaps, placeholders skipped", () => {

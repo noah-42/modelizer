@@ -45,6 +45,21 @@ if (raw.trim() !== "") {
   }
 }
 
+// Debug aid (MOD-R012): always record the last raw payload so a Claude Code
+// update that drops/renames rate_limits can be diagnosed from disk.
+try {
+  if (raw.trim() !== "") {
+    const debugPath = process.env.MODELIZER_CLAUDE_STATUSLINE_DEBUG_FILE?.trim()
+      || join(homedir(), ".modelizer", "claude-statusline-payload.debug.json");
+    mkdirSync(dirname(debugPath), { recursive: true });
+    const tmp = `${debugPath}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify({ recordedAt: new Date().toISOString(), raw: payload ?? raw })}\n`);
+    renameSync(tmp, debugPath);
+  }
+} catch {
+  // never fail the status line for a debug write
+}
+
 const rateLimits = payload !== null && typeof payload === "object"
   ? (payload as Record<string, unknown>).rate_limits
   : undefined;

@@ -134,7 +134,9 @@ export function oauthStatusHint(creds: OAuthCredentials, nowMs: number): StatusN
       },
     ];
   }
-  if (creds.expiresAt !== null && creds.expiresAt <= nowMs) {
+  // expiresAt === 0 means "unknown expiry" (observed in the Claude Code keychain
+  // item while the user stays logged in) — only a real past timestamp is expired.
+  if (creds.expiresAt !== null && creds.expiresAt > 0 && creds.expiresAt <= nowMs) {
     return [
       {
         label: "hint",
