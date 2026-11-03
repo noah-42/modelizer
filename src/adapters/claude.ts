@@ -816,7 +816,9 @@ function oauthRequestToken(ctx: CollectContext): string | null {
     ctx.log("claude: CLAUDE_OAUTH_USAGE=1 but no Claude Code token; skipping account-wide usage");
     return null;
   }
-  if (creds.expiresAt !== null && creds.expiresAt <= ctx.now.getTime()) {
+  // expiresAt === 0 means "unknown expiry" (observed in the Claude Code keychain
+  // item while the user stays logged in) — only a real past timestamp is expired.
+  if (creds.expiresAt !== null && creds.expiresAt > 0 && creds.expiresAt <= ctx.now.getTime()) {
     ctx.log("claude: Claude Code token expired; skipping account-wide usage");
     return null;
   }
