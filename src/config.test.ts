@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfig, DEFAULT_CONFIG, setProviderEnabled, setProviderOrder } from "./config";
 import { ADAPTERS } from "./adapters";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -122,4 +122,19 @@ enabled = false
     writeFileSync(path, "this is [not toml");
     expect(() => loadConfig(path)).toThrow(/parse|Toml|toml/i);
   });
+});
+
+test("server.token falls back to the MODELIZER_TOKEN environment variable", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "modelizer-config-"));
+  writeFileSync(join(dir, "modelizer.toml"), '[server]\nport = 7788\n');
+  const previous = process.env.MODELIZER_TOKEN;
+  process.env.MODELIZER_TOKEN = "env-secret-123";
+  try {
+    const cfg = await loadConfig(join(dir, "modelizer.toml"));
+    expect(cfg.server.token).toBe("env-secret-123");
+  } finally {
+    if (previous === undefined) delete process.env.MODELIZER_TOKEN;
+    else process.env.MODELIZER_TOKEN = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

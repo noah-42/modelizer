@@ -45,7 +45,7 @@ export function loadConfig(path = "modelizer.toml"): Config {
     server: {
       port: raw.server?.port ?? DEFAULT_CONFIG.server.port,
       bind: raw.server?.bind ?? DEFAULT_CONFIG.server.bind,
-      token: raw.server?.token?.trim() || undefined,
+      token: raw.server?.token?.trim() || process.env.MODELIZER_TOKEN?.trim() || undefined,
     },
     scheduler: {
       tickSeconds: raw.scheduler?.tick_seconds ?? DEFAULT_CONFIG.scheduler.tickSeconds,
