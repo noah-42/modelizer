@@ -1741,13 +1741,21 @@ function ProviderCard({
         </div>
       </div>
 
-      {p.planOnly && p.subscription !== null && (
+      {p.subscription !== null && (
         <div className="window-reset">
           <span className="status-dot" />
           <span>
-            {p.subscription.current === 0
-              ? "free — nothing to meter"
-              : `${friendlyMoney(p.subscription)} a month — no provider API to meter`}
+            {p.planOnly
+              ? p.subscription.current === 0
+                ? "free — nothing to meter"
+                : `${friendlyMoney(p.subscription)} a month — no provider API to meter`
+              : `${p.subscription.plan} — ${friendlyMoney(p.subscription)} a month${
+                  p.subscription.renewsAt
+                    ? ` · renews ${fmtLocalDate(p.subscription.renewsAt)}`
+                    : p.subscription.endsAt
+                      ? ` · ends ${p.subscription.endsAt}`
+                      : ""
+                }`}
             {p.subscription.note !== null && <span title="from subscriptions.toml"> · {p.subscription.note}</span>}
           </span>
         </div>
@@ -2026,6 +2034,10 @@ function fmtNow(): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function fmtLocalDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 function fmtLocalClock(iso: string): string {
