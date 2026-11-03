@@ -1858,7 +1858,7 @@ function ProviderCard({
                   p.subscription.renewsAt
                     ? ` · renews ${fmtLocalDate(p.subscription.renewsAt)}`
                     : p.subscription.endsAt
-                      ? ` · ends ${p.subscription.endsAt}`
+                      ? ` · ends ${fmtLocalDate(p.subscription.endsAt)}`
                       : ""
                 }`}
             {p.subscription.note !== null && <span title="from subscriptions.toml"> · {p.subscription.note}</span>}
@@ -2147,7 +2147,8 @@ function fmtNow(): string {
 }
 
 function fmtLocalDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  // The month is always the capitalised three-letter form (Nov), never a digit, any locale.
+  return new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function fmtLocalClock(iso: string): string {
