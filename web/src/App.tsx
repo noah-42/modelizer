@@ -233,6 +233,19 @@ function DashboardView() {
         </div>
       )}
 
+      {overview && hidden.length > 0 && (
+        <div className="hidden-strip">
+          <span className="muted">hidden:</span>
+          {hidden
+            .filter((id) => overview.providers.some((p) => p.id === id))
+            .map((id) => (
+              <button key={id} className="chip" onClick={() => toggle(id)} aria-label={`show ${id}`}>
+                {id} <span className="chip-plus">+</span>
+              </button>
+            ))}
+        </div>
+      )}
+
       <div className="cards">
         {overview?.providers
           .filter((p) => !hidden.includes(p.id))
@@ -247,18 +260,6 @@ function DashboardView() {
           ))}
       </div>
 
-      {overview && hidden.length > 0 && (
-        <div className="hidden-strip">
-          <span className="muted">hidden:</span>
-          {hidden
-            .filter((id) => overview.providers.some((p) => p.id === id))
-            .map((id) => (
-              <button key={id} className="chip" onClick={() => toggle(id)} aria-label={`show ${id}`}>
-                {id} <span className="chip-plus">+</span>
-              </button>
-            ))}
-        </div>
-      )}
     </>
   );
 }
