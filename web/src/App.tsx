@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { PROVIDER_GUIDES, guideFor } from "./guides";
 import {
   peekCache,
   putCache,
@@ -82,13 +83,19 @@ function friendlyLabel(label: string): string {
   return LABELS[label] ?? label;
 }
 
-const TABS = ["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary"] as const;
+const TABS = ["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary", "info"] as const;
 type Tab = (typeof TABS)[number];
 
 /** Every page owns its URL: /dashboard, /subscriptions, … so a click is a copy-pasteable address. */
 function tabFromPath(): Tab {
-  const seg = window.location.pathname.replace(/^\/+|\/+$/g, "");
+  const seg = window.location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "";
   return (TABS as readonly string[]).includes(seg) ? (seg as Tab) : "dashboard";
+}
+
+/** Second path segment under /info — the provider id. */
+function infoProviderFromPath(): string | null {
+  const segs = window.location.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  return segs[0] === "info" && segs[1] ? decodeURIComponent(segs[1]) : null;
 }
 
 export function App() {
@@ -146,6 +153,7 @@ export function App() {
       {tab === "models" && <ModelsView />}
       {tab === "audit" && <AuditView />}
       {tab === "diary" && <DiaryView />}
+      {tab === "info" && <InfoView />}
       </div>
     </>
   );
@@ -1542,6 +1550,71 @@ function chargeLine(s: Subscription, tick: number): ReactNode {
     <span title={s.renewsAt}>
       {fmtRenewalDay(s.renewsAt)} · in {countdown(s.renewsAt, tick)}
     </span>
+  );
+}
+
+/**
+ * Info pages (MOD-R013): one page per provider explaining how its five-hour,
+ * weekly and monthly metering works, and the limits we know about. Static,
+ * honest content from web/src/guides.tsx — nothing here invents a number.
+ */
+function InfoView() {
+  const [provider, setProviderState] = useState<string | null>(() => infoProviderFromPath());
+
+  const setProvider = (id: string | null) => {
+    setProviderState(id);
+    const path = id === null ? "/info" : `/info/${id}`;
+    if (window.location.pathname !== path) window.history.pushState({ info: id }, "", path);
+  };
+
+  useEffect(() => {
+    const onPop = () => setProviderState(infoProviderFromPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const ids = Object.keys(PROVIDER_GUIDES);
+  const guide = provider !== null ? guideFor(provider) : null;
+
+  return (
+    <>
+      <nav className="tabs">
+        <button
+          className={`tab ${provider === null ? "active" : ""}`}
+          onClick={() => setProvider(null)}
+        >
+          overview
+        </button>
+        {ids.map((id) => (
+          <button key={id} className={`tab ${provider === id ? "active" : ""}`} onClick={() => setProvider(id)}>
+            {providerName(id)}
+          </button>
+        ))}
+      </nav>
+      {provider !== null && guide === null && (
+        <div className="banner">No info page for “{provider}” yet — pick a provider above.</div>
+      )}
+      {provider === null && (
+        <div className="banner">
+          How each provider meters what modelizer watches — five-hour, weekly and monthly windows,
+          and the limits we do and do not know. Pick a provider above. Every page names its sources;
+          where a provider does not expose a fact, the page says so instead of guessing.
+        </div>
+      )}
+      {guide !== null && provider !== null && (
+        <div className="card">
+          <h2>{providerName(provider)}</h2>
+          <p className="muted">{guide.source}</p>
+          <p>{guide.summary}</p>
+          {guide.sections.map((s) => (
+            <section key={s.title}>
+              <h3>{s.title}</h3>
+              {s.body}
+            </section>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
