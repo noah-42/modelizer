@@ -31,10 +31,39 @@ const ul = (items: ReactNode[]): ReactNode => <ul>{items.map((it, i) => <li key=
 export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
   claude: {
     summary:
-      "Claude Pro/Max is metered by Anthropic as a rolling 5-hour window plus a weekly cap. Anthropic exposes no usage API for personal plans — everything modelizer knows is read locally.",
+      "Claude Pro is metered as a rolling 5-hour window plus a weekly cap. Sessions on this machine are launched by the Claude Desktop app, which injects its own OAuth login — usage draws from the subscription, not the API console.",
     source:
-      "Stability tier 3 (local files and CLIs). Sources: ~/.claude/projects transcripts (token totals), the Claude Code statusLine payload and StopFailure hook (percentages), opt-in account-wide usage endpoint (CLAUDE_OAUTH_USAGE=1).",
+      "Stability tier 3 (local files, no API). Sources: ~/.claude/projects transcripts (token totals), the Claude Code statusLine payload when it includes rate_limits (5h %), the StopFailure hook (exact resets on rate-limit events). Verified 2026-11-04 on Claude Code 2.1.316/2.1.317.",
     sections: [
+      {
+        title: "How login works on this machine (verified 2026-11-04)",
+        body: (
+          <>
+            {p(
+              "Interactive Claude Code sessions are launched by the Claude Desktop app, which holds the real OAuth login in its own encrypted internal store and injects it into the sessions it spawns. The token is never written to any place outside the app.",
+            )}
+            {ul([
+              "The login-keychain item \u201cClaude Code-credentials\u201d is a legacy leftover from a February terminal login \u2014 it holds empty strings (accessToken \u201c\u201d, expiresAt 0). modelizer no longer treats expiresAt 0 as \u201cexpired\u201d.",
+              "The data-protection keychain holds nothing under that name either \u2014 confirmed by a SecItem probe.",
+              "The former ANTHROPIC_API_KEY in ~/.zshrc was the literal placeholder string \u201csk-ant-...\u201d, not a real key (it 401'd against api.anthropic.com). Removed 2026-11-04; backup at ~/.zshrc.bak-20261104-fakekey.",
+              "Claude Code's /status in a Desktop-launched session reports \u201cAPI key: ANTHROPIC_API_KEY, Auth token: none\u201d \u2014 that env var was visible but fake; real auth flowed from the Desktop app.",
+              "If you run claude in a plain terminal instead, it will prompt /login once; the token then lands in the login keychain, where modelizer can read it and the account-wide usage endpoint works again (opt-in CLAUDE_OAUTH_USAGE=1). One login lasts about a year (refresh expiry Dec 2026).",
+            ])}
+          </>
+        ),
+      },
+      {
+        title: "Billing (verified 2026-11-04)",
+        body: (
+          <>
+            {ul([
+              "Usage flows from the Pro subscription (\u20ac21.42/month, renews the 6th) \u2014 not pay-as-you-go. The Anthropic console correctly shows $0: the API track is unused.",
+              "modelizer's subscription row (plan, price, renewal) is provider-detected facts plus subscriptions.toml config; money shown is the configured price, never a guessed invoice.",
+              "Token totals on the dashboard come from local transcripts (21.2b tokens all-time, per Claude Code /stats).",
+            ])}
+          </>
+        ),
+      },
       {
         title: "Five-hour window",
         body: (
@@ -43,8 +72,9 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
               "A rolling 300-minute window. It is NOT clockwork on the hour: the window opens at your first request after the previous window expires, so the reset time drifts with your usage pattern. Only the duration is fixed.",
             )}
             {ul([
-              "Percentages arrive only when Claude Code reports them — via the statusLine payload (rate_limits, present on some versions/invocations), the StopFailure hook (an exact reset recorded when a rate limit fires), or the opt-in account-wide usage endpoint.",
-              "modelizer never invents a reset time from the window duration — a blank means unknown, not soon.",
+              "Percentages arrive when Claude Code includes rate_limits in a statusLine payload \u2014 intermittently on 2.1.316/317 (observed: a real 3% five-hour reading on 2026-11-03, with no reset time).",
+              "The StopFailure hook records an exact reset when a rate-limit event fires (~/.modelizer/claude-rate-limit.json).",
+              "modelizer never invents a reset time from the window duration \u2014 a blank means unknown, not soon.",
               "Token totals for the window come from session transcripts, so they cover this machine only.",
             ])}
           </>
@@ -55,17 +85,7 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
         body: (
           <>
             {p(
-              "A fixed-in-time weekly cap (7×24 hours = 10080 minutes as a window length). Anthropic anchors it to your plan; modelizer shows a reset time only when a source reports one — it does not project it from the window length.",
-            )}
-          </>
-        ),
-      },
-      {
-        title: "Monthly / billing",
-        body: (
-          <>
-            {p(
-              "The plan itself (Pro, Max) renews monthly. modelizer merges provider-detected facts (plan name from the OAuth profile) with subscriptions.toml (price, renewal day). Money shown is the configured price, never a guessed invoice.",
+              "A fixed-in-time weekly cap (10080 minutes as a window length). modelizer shows a reset time only when a source reports one \u2014 it does not project it from the window length. As of 2026-11-04 no source delivers the weekly percentage on Claude Code 2.1.316/317; the card shows it blank rather than guessing.",
             )}
           </>
         ),
@@ -75,11 +95,10 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
         body: (
           <>
             {ul([
-              "Anthropic publishes no message caps or usage API for personal plans — the dashboard's percentages are the only machine-readable view.",
-              "`claude -p /usage` is a dead end on Claude Code 2.1.307+ (returns a local_command result).",
-              "Statusline rate_limits arrive intermittently on 2.1.316+ — the 5h percentage may be stale between sessions.",
-              "Claude Code 2.1.316+ stores no usable OAuth token in the legacy keychain item, so the account-wide usage endpoint answers 401 until modelizer learns the new credential store.",
-              "Token totals are local-only: claude.ai usage and other devices are invisible unless CLAUDE_OAUTH_USAGE=1 works.",
+              "Anthropic publishes no message caps or usage API for personal plans \u2014 the statusline payload and StopFailure hook are the only machine-readable percentage sources.",
+              "`claude -p /usage` is a dead end on Claude Code 2.1.307+ (returns a local_command result; failures are cached 6 hours).",
+              "The account-wide usage endpoint stays off (CLAUDE_OAUTH_USAGE unset): the Desktop-injected token is unreachable by design and the CLI keychain is empty, so the endpoint could only 401. It turns viable again if you /login from a terminal.",
+              "Token totals are local-only: claude.ai usage and other devices are invisible.",
             ])}
           </>
         ),
