@@ -114,10 +114,14 @@ export const zaiAdapter: Adapter = {
       Authorization: `Bearer ${ctx.env.ZAI_API_KEY}`,
       Accept: "application/json",
     };
-    const team = ctx.env.ZAI_ORGANIZATION !== undefined;
+    // A blank ZAI_ORGANIZATION is not a team: z.ai answers 200 with an empty data object for
+    // ?type=2 on a personal key, which reads as "no usable data" forever. Blank means absent.
+    const organization = (ctx.env.ZAI_ORGANIZATION ?? "").trim();
+    const team = organization !== "";
     if (team) {
-      headers["Bigmodel-Organization"] = ctx.env.ZAI_ORGANIZATION ?? "";
-      if (ctx.env.ZAI_PROJECT) headers["Bigmodel-Project"] = ctx.env.ZAI_PROJECT;
+      headers["Bigmodel-Organization"] = organization;
+      const project = (ctx.env.ZAI_PROJECT ?? "").trim();
+      if (project !== "") headers["Bigmodel-Project"] = project;
     }
 
     const polls: RawPoll[] = [];

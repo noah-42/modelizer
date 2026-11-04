@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { zaiAdapter } from "./zai";
-import type { RawPoll } from "./types";
+import type { CollectContext, RawPoll } from "./types";
 
 // Shapes pinned from CodexBar zai.js and TokenStep GLMQuotaService.swift (2026-10-03).
 const QUOTA_OK = {
@@ -259,3 +259,45 @@ describe("zai authFailure", () => {
     expect(zaiAdapter.authFailure?.([poll("balance", {}, 404)])).toBeNull();
   });
 });
+
+describe("zai collect scope", () => {
+  interface Seen {
+    url: string;
+    headers: Record<string, string>;
+  }
+
+  function collectWith(env: Record<string, string | undefined>): Promise<{ seen: Seen[]; polls: RawPoll[] }> {
+    const seen: Seen[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      seen.push({
+        url: String(input),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+      });
+      return new Response(JSON.stringify({ code: 200, success: true, data: { limits: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const ctx: CollectContext = { fetchFn, env, now: new Date("2026-11-04T15:00:00.000Z"), log: () => {} };
+    return zaiAdapter.collect(ctx).then((polls) => ({ seen, polls }));
+  }
+
+  test("a blank ZAI_ORGANIZATION does not ask z.ai for team scope", async () => {
+    const { seen } = await collectWith({ ZAI_API_KEY: "key", ZAI_ORGANIZATION: "", ZAI_PROJECT: "" });
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.some((s) => s.url.includes("type=2"))).toBe(false);
+    expect(seen.every((s) => !("Bigmodel-Organization" in s.headers))).toBe(true);
+    expect(seen.every((s) => !("Bigmodel-Project" in s.headers))).toBe(true);
+  });
+
+  test("a real ZAI_ORGANIZATION still asks for team scope", async () => {
+    const { seen } = await collectWith({ ZAI_API_KEY: "key", ZAI_ORGANIZATION: " org-1 ", ZAI_PROJECT: "proj-9" });
+
+    const quota = seen.find((s) => s.url.includes("/api/monitor/usage/quota/limit"));
+    expect(quota?.url).toContain("type=2");
+    expect(quota?.headers["Bigmodel-Organization"]).toBe("org-1");
+    expect(quota?.headers["Bigmodel-Project"]).toBe("proj-9");
+  });
+});
+
