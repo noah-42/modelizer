@@ -86,15 +86,21 @@ function friendlyLabel(label: string): string {
 const TABS = ["dashboard", "subscriptions", "manage", "changes", "models", "audit", "diary", "info"] as const;
 type Tab = (typeof TABS)[number];
 
-/** Every page owns its URL: /dashboard, /subscriptions, … so a click is a copy-pasteable address. */
+/** Optional mount prefix: under home.noah42.com the app lives at /modelizer/<tab>; bare when served at "/". */
+const BASE = window.location.pathname.startsWith("/modelizer") ? "/modelizer" : "";
+
+/** Every page owns its URL: <base>/dashboard, <base>/subscriptions, … so a click is a copy-pasteable address. */
 function tabFromPath(): Tab {
-  const seg = window.location.pathname.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "";
+  const segs = window.location.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  if (BASE) segs.shift();
+  const seg = segs[0] ?? "";
   return (TABS as readonly string[]).includes(seg) ? (seg as Tab) : "dashboard";
 }
 
-/** Second path segment under /info — the provider id. */
+/** Second path segment under <base>/info — the provider id. */
 function infoProviderFromPath(): string | null {
   const segs = window.location.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  if (BASE) segs.shift();
   return segs[0] === "info" && segs[1] ? decodeURIComponent(segs[1]) : null;
 }
 
@@ -104,7 +110,7 @@ export function App() {
 
   const setTab = (t: Tab) => {
     setTabState(t);
-    const path = t === "dashboard" ? "/dashboard" : `/${t}`;
+    const path = t === "dashboard" ? (BASE || "/dashboard") : `${BASE}/${t}`;
     if (window.location.pathname !== path) window.history.pushState({ tab: t }, "", path);
   };
 
@@ -115,7 +121,7 @@ export function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
   useEffect(() => {
-    const path = tab === "dashboard" ? "/dashboard" : `/${tab}`;
+    const path = tab === "dashboard" ? (BASE || "/dashboard") : `${BASE}/${tab}`;
     if (window.location.pathname !== path) window.history.replaceState({ tab }, "", path);
   }, [tab]);
 
@@ -1563,7 +1569,7 @@ function InfoView() {
 
   const setProvider = (id: string | null) => {
     setProviderState(id);
-    const path = id === null ? "/info" : `/info/${id}`;
+    const path = id === null ? `${BASE}/info` : `${BASE}/info/${id}`;
     if (window.location.pathname !== path) window.history.pushState({ info: id }, "", path);
   };
 
