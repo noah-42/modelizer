@@ -1,5 +1,7 @@
 # modelizer
 
+![Modelizer logo](assets/logo.png)
+
 One local dashboard for all your LLM subscriptions and APIs — quotas, balances, and spend across
 OpenRouter, Cursor, Copilot, Z.AI, Claude, Kimi, OpenCode, and more, without logging into each
 provider's website.
