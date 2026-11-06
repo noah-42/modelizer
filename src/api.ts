@@ -1,5 +1,7 @@
 import { manageDisplayName } from "./provider-registry";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { serveStatic } from "hono/bun";
@@ -177,6 +179,17 @@ function recordChange(
     const given = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : c.req.query("token") ?? "";
     if (given !== "" && hashesEqual(given, expectedToken)) return next();
     return c.json({ error: "unauthorized — pass the token as `Authorization: Bearer …` or `?token=…`" }, 401);
+  });
+
+  app.get("/api/docs", (c) => {
+    // JOB-R052: machine-readable docs pointer — the full API.md text, so the
+    // gateway's service index can link real documentation instead of the SPA.
+    try {
+      const text = readFileSync(join("API.md"), "utf8");
+      return c.body(text, 200, { "content-type": "text/markdown; charset=utf-8" });
+    } catch {
+      return c.json({ error: "docs unavailable" }, 404);
+    }
   });
 
   app.get("/api/overview", (c) => {
@@ -553,6 +566,8 @@ function recordChange(
    */
   app.all("/api/*", (c) => c.json({ error: "no such API route" }, 404));
 
+  app.get("/", (c) => c.redirect("/dashboard", 308));
+  app.get("/dashboard", serveStatic({ path: "./web/dist/index.html" }));
   app.use("*", serveStatic({ root: "./web/dist" }));
   app.get("*", serveStatic({ path: "./web/dist/index.html" }));
 
