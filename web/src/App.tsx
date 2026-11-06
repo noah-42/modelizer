@@ -141,7 +141,7 @@ export function App() {
   return (
     <>
       <header className="site-header">
-        <img className="header-logo" src="/modelizer-icon.svg" alt="" width={26} height={26} />
+        <img className="header-logo" src="/modelizer-icon.png" alt="" width={26} height={26} />
         <h1>modelizer</h1>
       </header>
       <nav className="tabs site-tabs">
