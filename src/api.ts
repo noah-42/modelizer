@@ -43,6 +43,7 @@ import {
   parseModelRef,
 } from "./openrouter";
 import { loadConfig } from "./config";
+import { capabilitiesOf, provenanceOf, ProviderEvent, snapshotVersionOf } from "./reporting";
 import { windowsFromPoints, type OverviewWindow } from "./windows";
 import { registerProviderRoutes, type ProviderRouteDeps } from "./api-providers";
 
@@ -51,10 +52,21 @@ export interface DegradedEndpoint {
   status: number;
 }
 
+/** Server build version, served on /api/version and inside per-provider provenance. */
+const buildVersion: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
 export interface OverviewProvider {
   id: string;
   /** Display name resolved for this card: modelizer.toml override, else the registry name. */
   name: string;
+  companyDomain: string | null;
   stabilityTier: number;
   pollEverySeconds: number;
   configured: boolean;
@@ -63,6 +75,17 @@ export interface OverviewProvider {
   lastErrorAt: string | null;
   consecutiveFailures: number;
   stale: boolean;
+  /** Last poll attempt of any kind — success or failure; overview generatedAt is not a check time. */
+  lastAttempt: string | null;
+  /** How long without a success before the card reads stale (3× the poll cadence). */
+  staleAfterSeconds: number;
+  /** Estimated next poll time (cadence + ±10% jitter, or backoff after failures) — an estimate, not a promise. */
+  nextPollAt: string | null;
+  nextPollBasis: "estimate" | null;
+  /** Where these readings came from: real vs demo/fixture, upstream origin, non-secret account reference. */
+  provenance: ProviderProvenance;
+  /** What this provider can and cannot answer, per explicit value. */
+  capabilities: ProviderCapabilities;
   status: StatusNote[];
   notes: ProviderNote[];
   degradedEndpoints: DegradedEndpoint[];
@@ -127,8 +150,16 @@ export interface DiaryDay {
 
 export interface Overview {
   generatedAt: string;
+  /** Hash over stable window identities + values; a watcher compares this before diffing. */
+  snapshotVersion: string;
   providers: OverviewProvider[];
 }
+
+/** Non-secret runtime provenance for one provider card. */
+export type ProviderProvenance = ReturnType<typeof provenanceOf>;
+
+/** Per-provider capability values: supported | unsupported | auth-required | unknown. */
+export type ProviderCapabilities = ReturnType<typeof capabilitiesOf>;
 
 /** Compare in constant time, via a hash so differing lengths cannot leak timing. */
 function hashesEqual(given: string, expected: string): boolean {
@@ -214,6 +245,21 @@ function recordChange(
         state === undefined ||
         state.last_success === null ||
         now().getTime() - Date.parse(state.last_success) > 3 * pollEveryMs;
+      // The last attempt is whenever the scheduler last tried: a success stamp or a failure stamp.
+      const lastAttempt = [state?.last_success, state?.last_error_at]
+        .filter((v): v is string => v != null)
+        .sort()
+        .at(-1) ?? null;
+      // Next poll: cadence + ±10% jitter when healthy; exponential backoff after failures,
+      // mirroring the scheduler's formula. It is an estimate — jitter is not persisted.
+      let nextPollAt: string | null = null;
+      if (lastAttempt !== null) {
+        const failures = state?.consecutive_failures ?? 0;
+        const waitMs = failures > 0
+          ? Math.min(pollEveryMs * 2 ** failures, 3_600_000)
+          : pollEveryMs;
+        nextPollAt = new Date(Date.parse(lastAttempt) + waitMs).toISOString();
+      }
       // Dead data must not pose as current: once polling has demonstrably failed past the
       // staleness horizon AND the failure postdates the capture, the last usage point stops
       // rendering. The error and the subscription row stay; the ghost percentage goes.
@@ -232,6 +278,8 @@ function recordChange(
       const degradedEndpoints = raws
         .filter((r) => r.captured_at === latestBatch && (r.status < 200 || r.status >= 300))
         .map((r) => ({ endpoint: r.endpoint, status: r.status }));
+      const ownWindows = windowsFromPoints(ownPoints);
+      const subscription = planRows.get(a.id) ?? null;
       return {
         id: a.id,
         companyDomain: companyDomain(a.id),
@@ -244,6 +292,19 @@ function recordChange(
         lastErrorAt: state?.last_error_at ?? null,
         consecutiveFailures: state?.consecutive_failures ?? 0,
         stale,
+        lastAttempt,
+        staleAfterSeconds: Math.round((3 * pollEveryMs) / 1000),
+        nextPollAt,
+        nextPollBasis: nextPollAt === null ? null : "estimate",
+        provenance: provenanceOf(a, buildVersion, state, raws, env),
+        capabilities: capabilitiesOf({
+          adapter: a,
+          state,
+          hasSuccessfulPoints: ownPoints.length > 0,
+          windows: ownWindows,
+          planOnly: false,
+          subscription,
+        }),
         status: [
           ...(a.liveStatus ? a.liveStatus(now()) : []),
           ...(a.statusHints?.(env) ?? []),
@@ -253,10 +314,10 @@ function recordChange(
         // Includes daily history rows (model-daily) — the UI renders those in a separate
         // per-model section rather than the main card rows.
         points: ownPoints,
-        windows: windowsFromPoints(ownPoints).map(
+        windows: ownWindows.map(
           ({ provider: _provider, ...window }) => window,
         ),
-        subscription: planRows.get(a.id) ?? null,
+        subscription,
         planOnly: false,
       };
     });
@@ -272,7 +333,23 @@ function recordChange(
       (a, b) =>
         (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
     );
-    return c.json({ generatedAt: now().toISOString(), providers } satisfies Overview);
+    const snapshotVersion = snapshotVersionOf([
+      ...providers.flatMap((p) => p.windows.map((w) => ({ id: w.id, usedPercent: w.usedPercent, resetsAt: w.resetsAt, stale: w.stale }))),
+      ...providers.map((p) => ({ provider: p.id, lastSuccess: p.lastSuccess, stale: p.stale })),
+    ]);
+    return c.json({ generatedAt: now().toISOString(), snapshotVersion, providers } satisfies Overview);
+  });
+
+  /**
+   * Read-only change feed for watchers, classified and deduplicated: plain polls are not events.
+   * `since` (an ISO instant or a snapshot version prefix) cuts the feed at that point.
+   */
+  app.get("/api/events", (c) => {
+    const limit = Math.min(Number(c.req.query("limit") ?? "200") || 200, 1000);
+    const since = c.req.query("since");
+    const sinceIso = since !== undefined && since.includes("T") ? since : null;
+    const events = buildEvents(db, limit, sinceIso);
+    return c.json({ generatedAt: now().toISOString(), events });
   });
 
   /** A card for a plan that has no endpoint behind it: the row and nothing pretending to poll. */
@@ -289,6 +366,29 @@ function recordChange(
       lastErrorAt: null,
       consecutiveFailures: 0,
       stale: false,
+      lastAttempt: null,
+      staleAfterSeconds: 0,
+      nextPollAt: null,
+      nextPollBasis: null,
+      provenance: {
+        mode: "unknown",
+        upstreamOrigin: null,
+        adapterVersion: `plan-only@${buildVersion}`,
+        accountLabel: null,
+        accountRef: null,
+        accountEvidence: null,
+        lastRealCheck: null,
+      },
+      capabilities: {
+        usage: "unsupported",
+        shortWindow: "unsupported",
+        weeklyWindow: "unsupported",
+        monthlyWindow: "unsupported",
+        resetTimestamps: "unsupported",
+        billingRenewal: subscription.renewsAt != null ? "supported" : "unsupported",
+        expiry: subscription.endsAt != null ? "supported" : "unknown",
+        accountVerification: "unknown",
+      },
       status: [],
       notes: [],
       degradedEndpoints: [],
@@ -555,7 +655,8 @@ function recordChange(
     c.json({
       server: "modelizer",
       startedAt: now().toISOString(),
-      routes: ["overview", "subscriptions-config", "changes", "providers-manage", "version"],
+      routes: ["overview", "subscriptions-config", "changes", "providers-manage", "events", "version"],
+      version: buildVersion,
     }),
   );
 
@@ -818,4 +919,74 @@ function decodeProvider(raw: string): string {
         errors: counts.errors,
       };
     });
+}
+
+/**
+ * Classify the audit trail into watcher events, deduplicated: plain polls are not events, a
+ * success after failures is access recovery (never quota recovery), an `auth:` error is an
+ * auth failure. Reset notices add provider-confirmed window events. Newest first.
+ */
+function buildEvents(db: Db, limit: number, sinceIso: string | null): ProviderEvent[] {
+  const failures = new Map<string, number>();
+  const out: ProviderEvent[] = [];
+  const audit = db.auditEvents({ limit: 4000 }).slice().reverse(); // chronological
+  for (const row of audit) {
+    const provider = row.provider ?? "?";
+    if (row.event.startsWith("poll ok")) {
+      const prior = failures.get(provider) ?? 0;
+      if (prior > 0) {
+        out.push({
+          at: row.at,
+          provider,
+          type: "access-recovered",
+          detail: `poll succeeded after ${prior} failure(s) — access recovery, not quota recovery`,
+        });
+      }
+      failures.set(provider, 0);
+      continue;
+    }
+    if (row.level === "error" || row.level === "warn") {
+      const isAuth = row.event.startsWith("auth:") || /auth/i.test(row.detail ?? "");
+      failures.set(provider, (failures.get(provider) ?? 0) + 1);
+      out.push({
+        at: row.at,
+        provider,
+        type: isAuth ? "auth-failure" : "poll-error",
+        detail: [row.event, row.detail].filter((v) => v != null && v !== "").join(" — "),
+      });
+    }
+  }
+  // Provider-confirmed window events: the notifier's dedupe keys guarantee one row per occurrence.
+  let notices: Array<{ detected_at: string; provider: string; quota_window: string; payload: string }> = [];
+  try {
+    notices = db.raw
+      .query<typeof notices[number], { $limit: number }>(
+        "SELECT detected_at, provider, quota_window, payload FROM reset_notices ORDER BY detected_at DESC LIMIT $limit",
+      )
+      .all({ $limit: limit });
+  } catch {
+    // Table only exists once the notifier ran; no notices is an honest empty list.
+  }
+  for (const n of notices) {
+    const payload = (() => {
+      try {
+        const parsed = JSON.parse(n.payload) as { resetsAt?: unknown; usedPercent?: unknown };
+        const parts = [
+          typeof parsed.resetsAt === "string" ? `reset ${parsed.resetsAt}` : null,
+          typeof parsed.usedPercent === "number" ? `${parsed.usedPercent}% used at expiry` : null,
+        ].filter((v) => v !== null);
+        return parts.join(" · ") || null;
+      } catch {
+        return null;
+      }
+    })();
+    out.push({
+      at: n.detected_at,
+      provider: n.provider,
+      type: "provider-confirmed-new-window",
+      detail: [`${n.quota_window} window reset passed`, payload].filter((v) => v !== null).join(" — "),
+    });
+  }
+  const all = out.sort((a, b) => (a.at < b.at ? 1 : -1));
+  return sinceIso === null ? all.slice(0, limit) : all.filter((e) => e.at > sinceIso).slice(0, limit);
 }

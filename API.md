@@ -39,12 +39,36 @@ then `planOnly: true` entries for subscriptions with no API behind them.
 ```jsonc
 {
   "generatedAt": "2026-10-22T17:30:15.000Z",
+  "snapshotVersion": "v1_9f2c11ab44cd1e77",
   "providers": [
     {
       "id": "cursor",
       "configured": true,
       "stale": false,
       "lastSuccess": "2026-10-22T17:25:40.000Z",
+      "lastAttempt": "2026-10-22T17:25:40.000Z",
+      "staleAfterSeconds": 2700,
+      "nextPollAt": "2026-10-22T17:40:40.000Z",
+      "nextPollBasis": "estimate",
+      "provenance": {
+        "mode": "real",
+        "upstreamOrigin": "https://api2.cursor.sh",
+        "adapterVersion": "cursor@0.1.0",
+        "accountLabel": null,
+        "accountRef": null,
+        "accountEvidence": null,
+        "lastRealCheck": "2026-10-22T17:25:40.000Z"
+      },
+      "capabilities": {
+        "usage": "supported",
+        "shortWindow": "unknown",
+        "weeklyWindow": "supported",
+        "monthlyWindow": "unknown",
+        "resetTimestamps": "supported",
+        "billingRenewal": "unknown",
+        "expiry": "unknown",
+        "accountVerification": "unknown"
+      },
       "lastError": null,
       "degradedEndpoints": [],
       "status": [],
@@ -61,7 +85,29 @@ then `planOnly: true` entries for subscriptions with no API behind them.
           "source": "cursor-api"
         }
       ],
-      "windows": [{ "window": "weekly", "usedPercent": 90.27, "resetsAt": "2026-10-24T14:01:19.604Z" }],
+      "windows": [
+        {
+          "id": "cursor|weekly",
+          "window": "weekly",
+          "scope": "cursor-included-usage",
+          "model": null,
+          "unit": "percent",
+          "used": 90.27,
+          "limit": 100,
+          "remaining": null,
+          "usedPercent": 90.27,
+          "capturedAt": "2026-10-22T17:25:40.000Z",
+          "source": "cursor-api",
+          "stale": false,
+          "resetsAt": "2026-10-24T14:01:19.604Z",
+          "reset": {
+            "resetsAt": "2026-10-24T14:01:19.604Z",
+            "basis": "provider-reported",
+            "reason": null,
+            "windowKind": "fixed"
+          }
+        }
+      ],
       "subscription": { "plan": "Premium", "price": 15.5, "currency": "EUR" },
       "planOnly": false
     }
@@ -69,10 +115,34 @@ then `planOnly: true` entries for subscriptions with no API behind them.
 }
 ```
 
-`windows[]` is the authoritative view for an outside assistant: the tightest window that gates a
-working session on that provider (`five_hour`, `weekly`, `monthly`), how much of it is used, and
-when it resets. A window with nothing spent carries `resetsAt: null` — providers only start the
-clock on the first request, and modelizer does not invent a time.
+`windows[]` is the self-contained, authoritative view for an outside assistant. Each window
+names its provider-stable identity (`id`), what the value meters (`scope`, `model`), its `unit`,
+absolute `used`/`limit`/`remaining`, its own `capturedAt` (not the overview's `generatedAt`),
+and a qualified `reset`:
+
+- `reset.basis` is `provider-reported` (straight from the payload; never estimated), or
+  `unavailable` with a `reason` — `stale-data`, `provider-does-not-expose` (e.g. Z.AI's
+  percentage-only 5h window), or `unknown`.
+- `reset.windowKind` is `rolling` (sliding) or `fixed` (provider clock), where known.
+- A null `resetsAt` is preserved as null: no countdown is manufactured, and an expired
+  provider timestamp is passed through as-is — a passed stamp is not evidence the allowance
+  recovered, and a counter drop without a new window can be a correction.
+
+`snapshotVersion` hashes the watched window values; compare it before diffing providers.
+
+`provenance` ties readings to the running account without ever returning secrets: `mode` is
+`real` when the latest successful poll hit a declared production origin, `demo` when it hit any
+other origin (mock server, base-URL override), and `unknown` when there is no evidence or the
+adapter declares no origins. `accountRef`/`accountLabel` are non-secret provider-stated
+references (e.g. Z.AI's `zai-coding-level:lite`); `lastRealCheck` is the last success against
+the real account.
+
+`capabilities` is the explicit matrix of what a provider can answer — each value is
+`supported`, `unsupported`, `auth-required`, or `unknown`, never guessed from absence.
+
+Freshness fields: `lastAttempt` is the last try of any kind; `staleAfterSeconds` is the
+staleness horizon; `nextPollAt` is an **estimate** (cadence + ±10% jitter, or backoff after
+failures) — `nextPollBasis` says so.
 
 ### `GET /api/subscriptions`
 
@@ -96,11 +166,30 @@ clock on the first request, and modelizer does not invent a time.
       "endsAt": null,
       "note": null,
       "source": "codex-auth+config",
+      "fieldSources": {
+        "plan": "provider:codex-auth",
+        "price": "config",
+        "currency": "config",
+        "renewsAt": "config",
+        "endsAt": "none",
+        "state": "provider:codex-auth"
+      },
+      "renewsAtPrecision": "day",
+      "endsAtPrecision": null,
       "configured": true
     }
   ]
 }
 ```
+
+Billing dates and quota dates never share a field: `renewsAt` is the next automatic charge,
+`endsAt` is the paid-through date of a term that will not renew, and quota resets live only on
+the provider's windows. `fieldSources` names which half supplied each value — `config:*` values
+are manual bookkeeping from `subscriptions.toml`, never provider-verified. `renewsAtPrecision` /
+`endsAtPrecision` qualify the timestamps: `"day"` means the time-of-day is a display default
+built from a date or day-of-month; `"instant"` means the provider stated the exact time. Date-only
+values stay dates in the config and carry a documented default instant in the merged row — never
+an invented local-midnight instant. Currency and `period` stay explicit; no conversion happens.
 
 `totals` sums the plans that are active **now** (`counts: true`), per currency — currencies are
 never converted or added together. A prepaid term or a cancelled plan stays in `subscriptions`
@@ -169,9 +258,27 @@ The changelog page's data: every user-made change, newest first, capped at 1000.
 
 ### `GET /api/version`
 
-Build stamp for the page's server-older-than-UI check. Unknown `/api/*` paths answer JSON
-`404 {"error":"no such API route"}` — never the SPA's `index.html` — so a server older than
-the page produces a readable "restart modelizer" banner instead of an HTML parse error.
+Build stamp for the page's server-older-than-UI check — also carries `version`, the server
+build from `package.json`, which `provenance.adapterVersion` echoes per provider. Unknown
+`/api/*` paths answer JSON `404 {"error":"no such API route"}` — never the SPA's `index.html`
+— so a server older than the page produces a readable "restart modelizer" banner instead of an
+HTML parse error.
+
+### `GET /api/events`
+
+Read-only, deduplicated change feed for watchers (`?limit=`, `?since=<ISO>` to cut it). Plain
+polls are not events. Each row: `at`, `provider`, `type`, `detail`.
+
+- `access-recovered` — a poll succeeded after failures. This is **access recovery, not quota
+  recovery**: it says nothing about allowance.
+- `auth-failure` — the provider rejected the stored credential; the fix is a new key, not retries.
+- `poll-error` — any other failed attempt.
+- `provider-confirmed-new-window` — from the reset notifier's deduplicated notices (one row per
+  occurrence; a baseline after missing data creates no synthetic reset).
+
+```sh
+curl -s http://127.0.0.1:7788/api/events?limit=50
+```
 
 ### `GET /api/providers/manage`
 

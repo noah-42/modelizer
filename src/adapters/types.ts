@@ -93,6 +93,24 @@ export interface Adapter {
   subscriptionFacts?(polls: RawPoll[], now: Date): SubscriptionFacts | null;
   /** Optional env-derived hints (e.g. "add X key to unlock more data"), shown as muted status rows. */
   statusHints?(env: Record<string, string | undefined>): StatusNote[];
+  /**
+   * Production upstream origins this adapter polls when running against the real account.
+   * A latest-poll origin on this list proves "real"; any other origin (mock server, fixture
+   * base URL override) proves "demo"; no successful poll leaves the mode "unknown".
+   */
+  upstreamOrigins?: readonly string[];
+  /**
+   * Non-secret account provenance from the latest successful polls: a plan level or other
+   * stable, opaque account reference. Never key material, headers, or emails. Pure; returns
+   * null when the polls do not identify the account. Polls are archived rows (or live polls):
+   * `json` is present when the body parsed.
+   */
+  accountFacts?(
+    polls: ReadonlyArray<Pick<RawPoll, "endpoint" | "url" | "status" | "body"> & { json?: unknown }>,
+    env: Record<string, string | undefined>,
+  ): { label: string; ref: string } | null;
+  /** Window types this provider is known not to expose (marked unsupported, never inferred). */
+  unsupportedWindows?: readonly string[];
   /** Optional static pricing/token-value notes. */
   notes?: ProviderNote[];
   /**
@@ -104,6 +122,15 @@ export interface Adapter {
 }
 
 export class NormalizeError extends Error {}
+
+/** The origin of a poll URL, or the URL itself when it has no scheme to parse (local pseudo-urls). */
+export function pollOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
 
 /** The provider rejected the stored credentials — retrying cannot fix this; the key must be replaced. */
 export class AuthError extends Error {}

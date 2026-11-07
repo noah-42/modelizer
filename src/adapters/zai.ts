@@ -48,6 +48,19 @@ export const zaiAdapter: Adapter = {
   missingCredentials(env) {
     return env.ZAI_API_KEY ? [] : ["ZAI_API_KEY"];
   },
+  upstreamOrigins: [DEFAULT_BASE],
+  unsupportedWindows: ["weekly", "monthly"],
+  accountFacts(polls) {
+    // The quota-limit payload carries `data.level` (e.g. "lite") — the coding-plan tier the key
+    // belongs to. It is the only non-secret account reference this API exposes, so it is the
+    // evidence that the running key is the intended plan. No key material ever leaves here.
+    const poll = polls.find((p) => p.endpoint === "quota-limit" && p.status === 200);
+    if (poll === undefined) return null;
+    const data = (poll.json as { data?: { level?: unknown } } | null)?.data;
+    const level = typeof data?.level === "string" && data.level !== "" ? data.level : null;
+    if (level === null) return null;
+    return { label: `GLM Coding Plan (level: ${level})`, ref: `zai-coding-level:${level}` };
+  },
 
   authFailure(polls) {
     // Z.AI rejects a dead key with HTTP 200 + body {code:1000, msg:"Authentication Failed"} on

@@ -265,6 +265,16 @@ describe("SubscriptionCatalog", () => {
       state: "active",
       seats: null,
       source: "claude-oauth+config",
+      fieldSources: {
+        plan: "provider:claude-oauth",
+        price: "config",
+        currency: "default",
+        renewsAt: "config",
+        endsAt: "none",
+        state: "provider:claude-oauth",
+      },
+      renewsAtPrecision: "day",
+      endsAtPrecision: null,
       configured: true,
       note: null,
     });

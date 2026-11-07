@@ -93,6 +93,12 @@ export interface Subscription {
   seats: number | null;
   /** `config`, the provider source, or `<source>+config`. */
   source: string;
+  /** Per-field provenance: which half supplied each value. Config values are manual bookkeeping, never provider-verified. */
+  fieldSources: Record<string, string>;
+  /** "day" when renewsAt is built from a date/day (the time is a display default); "instant" when the exact time is stated; null when there is no date. */
+  renewsAtPrecision: "day" | "instant" | null;
+  /** Same qualification for the paid-through date; config `ends_at` is date-only, so "day". */
+  endsAtPrecision: "day" | "instant" | null;
   /** True when the provider appears in subscriptions.toml. */
   configured: boolean;
   /** A recorded fact from subscriptions.toml, shown on the card and the row. */
@@ -570,6 +576,32 @@ export class SubscriptionCatalog {
     // A year paid in one go is a spent cost, not a monthly one; a cancelled plan costs nothing.
     const prepaid = endsAt !== null && period === "annual";
     const live = state !== "cancelled" && state !== "past_due";
+    // Where each field came from: provider facts are verified, config is the user's own books.
+    const factSource = facts?.source ?? null;
+    const fieldSources: Record<string, string> = {
+      plan: facts?.planId != null ? `provider:${factSource}` : entry?.plan !== undefined || entry?.label !== undefined ? "config" : "derived",
+      price: entry?.price !== undefined ? "config" : known !== undefined ? "list-price" : "none",
+      currency: entry?.currency !== undefined ? "config" : "default",
+      renewsAt: entry?.renewsDay !== undefined || entry?.renewsAt !== undefined
+        ? "config"
+        : facts?.renewsAt != null
+          ? `provider:${factSource}`
+          : "none",
+      endsAt: entry?.endsAt !== undefined ? "config" : "none",
+      state: facts !== undefined && facts.state !== "unknown" ? `provider:${factSource}` : entry?.state !== undefined ? "config" : "unknown",
+    };
+    // Precision: a renewal computed from renews_day or a date-only config value carries a
+    // display-default time (09:00 UTC); only a provider-stated instant is exact.
+    const renewsAtPrecision: "day" | "instant" | null =
+      renewsAt === null
+        ? null
+        : facts?.renewsAt != null && entry?.renewsDay === undefined && entry?.renewsAt === undefined
+          ? "instant"
+          : typeof entry?.renewsAt === "string" && entry.renewsAt.includes("T")
+            ? "instant"
+            : "day";
+    const endsAtPrecision: "day" | "instant" | null =
+      endsAt !== null ? (endsAt.includes("T") ? "instant" : "day") : null;
 
     return {
       provider,
@@ -588,6 +620,9 @@ export class SubscriptionCatalog {
       state,
       seats: entry?.seats ?? facts?.seats ?? null,
       source: sourceLabel(entry !== undefined, facts?.source),
+      fieldSources,
+      renewsAtPrecision,
+      endsAtPrecision,
       configured: entry !== undefined,
       note: entry?.note ?? null,
     };
