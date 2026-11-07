@@ -45,7 +45,7 @@ export function provenanceOf(
     return { ...r, json };
   });
   const account = adapter.accountFacts?.(polls, env) ?? null;
-  const latest = raws[0];
+  const latest = raws.find((r) => r.status >= 200 && r.status < 300);
   const origin = latest !== undefined ? pollOrigin(latest.url) : null;
   const real = adapter.upstreamOrigins?.includes(origin ?? "") === true;
   const mode: Provenance["mode"] =

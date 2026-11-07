@@ -28,6 +28,9 @@ import type { Adapter, CollectContext, ProviderNote, RawPoll, UsagePoint } from 
  */
 
 export const CURSOR_PROFILE_URL = "https://api2.cursor.sh/auth/full_stripe_profile";
+
+/** Production origins — provenance mode `real` is proven only against these. */
+export const CURSOR_ORIGINS = ["https://api2.cursor.sh"] as const;
 export const CURSOR_PROFILE_ENDPOINT = "stripe-profile";
 export const CURSOR_PERIOD_URL =
   "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
@@ -300,6 +303,7 @@ function tokenMissingPoll(statePath: string): RawPoll {
 export const cursorAdapter: Adapter = {
   id: "cursor",
   stabilityTier: 2,
+  upstreamOrigins: CURSOR_ORIGINS,
   pollEveryMs: CURSOR_POLL_MS,
 
   isConfigured(env) {
